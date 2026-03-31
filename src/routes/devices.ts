@@ -198,8 +198,7 @@ router.get(
 router.get(
   "/verify",
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const query = verifyQuerySchema.parse(req.
-      query);
+    const query = verifyQuerySchema.parse(req.query);
 
     const conditions: string[] = [];
     const values: string[] = [];

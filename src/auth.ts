@@ -57,19 +57,26 @@ export const auth = betterAuth({
         type: "boolean",
         defaultValue: false,
         required: false,
+        input: true,
+
       },
       onboardingState: {
         type: "string",
         defaultValue: "not_started",
         required: false,
+        input: true,
+
       },
       hubId: {
         type: "string",
         required: false,
+        input: true,
+
       },
       attributes: {
         type: "json",
         required: false,
+        input: true,
       },
     },
   },

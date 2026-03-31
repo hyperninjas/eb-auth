@@ -78,7 +78,7 @@ export async function seedDevices(): Promise<void> {
       await client.query(
         `INSERT INTO device (device_id, rfid, mac_address, name, created_by)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT (device_id) DO NOTHING`,
         [d.device_id, d.rfid, d.mac_address, d.name, "system-seed"],
       );
     }
