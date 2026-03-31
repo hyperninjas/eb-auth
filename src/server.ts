@@ -156,8 +156,91 @@ if (isProduction) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Auth routes — mounted BEFORE body parsers so Better Auth can read
-//    the raw request body itself.
+// 6a. Mobile OAuth — browser-based social login for mobile clients.
+//     Defined BEFORE the Better Auth catch-all so they match first.
+//
+//     Flow:
+//     1. Mobile app opens browser → GET /api/auth/mobile/google
+//     2. Server calls Better Auth internally, forwards state cookies,
+//        and redirects the browser straight to Google OAuth.
+//     3. Google authenticates → redirects to Better Auth callback.
+//     4. Better Auth creates session → redirects to /api/auth/mobile/complete.
+//     5. This route reads the session cookie and redirects to the app's
+//        deep link (energiebee://auth/callback?token=SESSION_TOKEN).
+// ---------------------------------------------------------------------------
+
+// GET /api/auth/mobile/:provider
+// Calls Better Auth's sign-in/social internally, forwards the state cookie
+// to the browser, and redirects to the OAuth provider (e.g. Google).
+app.get(
+  "/api/auth/mobile/:provider",
+  async (req: Request, res: Response): Promise<void> => {
+    const provider = req.params.provider;
+    const appRedirect =
+      (req.query.redirect as string) || "energiebee://auth/callback";
+    const callbackURL = `${env.BETTER_AUTH_URL}/api/auth/mobile/complete?redirect=${encodeURIComponent(appRedirect)}`;
+
+    try {
+      // Call Better Auth's social sign-in handler internally
+      const internalRes = await auth.handler(
+        new Request(`${env.BETTER_AUTH_URL}/api/auth/sign-in/social`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider, callbackURL }),
+        }),
+      );
+
+      // Forward Set-Cookie headers (state cookie) to the browser
+      const setCookies = internalRes.headers.getSetCookie();
+      for (const cookie of setCookies) {
+        res.append("Set-Cookie", cookie);
+      }
+
+      // Read the redirect URL from Better Auth's response
+      const data = (await internalRes.json()) as { url?: string };
+      if (data.url) {
+        res.redirect(302, data.url);
+      } else {
+        res.status(400).send("Failed to start OAuth");
+      }
+    } catch (err) {
+      logger.error(err, "Mobile OAuth initiation failed");
+      res.status(500).send("Internal error");
+    }
+  },
+);
+
+// GET /api/auth/mobile/complete?redirect=<app-deep-link>
+// Called after OAuth success. Reads the session token from the cookie
+// and redirects to the mobile app's deep link with the token.
+app.get(
+  "/api/auth/mobile/complete",
+  (req: Request, res: Response): void => {
+    const appRedirect =
+      (req.query.redirect as string) || "energiebee://auth/callback";
+
+    // Parse session token from cookies (cookie parser not yet applied here)
+    const cookies = req.headers.cookie || "";
+    const tokenMatch = cookies.match(
+      /(?:__Secure-)?better-auth\.session_token=([^;]+)/,
+    );
+    const sessionToken = tokenMatch
+      ? decodeURIComponent(tokenMatch[1])
+      : null;
+
+    if (sessionToken) {
+      res.redirect(
+        `${appRedirect}?token=${encodeURIComponent(sessionToken)}`,
+      );
+    } else {
+      res.status(400).send("Authentication failed. Please try again.");
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 6b. Auth routes — mounted BEFORE body parsers so Better Auth can read
+//     the raw request body itself.
 // ---------------------------------------------------------------------------
 app.use("/api/auth", authLimiter);
 app.all("/api/auth/*splat", toNodeHandler(auth));
