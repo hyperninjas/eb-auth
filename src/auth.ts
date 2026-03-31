@@ -3,6 +3,7 @@ import { logger } from "./logger.js";
 import {
   admin,
   bearer,
+  jwt,
   openAPI,
   organization,
   twoFactor,
@@ -97,6 +98,19 @@ export const auth = betterAuth({
 
     // Bearer token auth for mobile / API clients
     bearer(),
+
+    // JWT token auth
+    jwt({
+      jwt: {
+        expirationTime: "7d",
+        definePayload: ({ user }) => ({
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          role: (user as Record<string, unknown>).role ?? "user",
+        }),
+      },
+    }),
 
     // Two-factor authentication (TOTP)
     twoFactor({

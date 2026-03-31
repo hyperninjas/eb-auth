@@ -14,9 +14,6 @@ import { env, isProduction } from "./env.js";
 import { auth } from "./auth.js";
 import { logger, httpLogger } from "./logger.js";
 import devicesRouter from "./routes/devices.js";
-import { runMigrations } from "./db/migrate.js";
-import { seedDevices } from "./db/seed.js";
-import { pool } from "./db.js";
 
 const app: Express = express();
 
@@ -143,7 +140,7 @@ app.use("/api/auth", authLimiter);
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 // ---------------------------------------------------------------------------
-// 7. Body Parsing with size limits (OWASP A08 - Software & Data Integrity)
+// 7. Body Parsing with size limits (OWASP A08 – Software & Data Integrity)
 //    Applied to all non-auth routes below.
 // ---------------------------------------------------------------------------
 app.use(express.json({ limit: "10kb" }));
@@ -165,15 +162,10 @@ app.use(cookieParser());
 app.use("/api/devices", devicesRouter);
 
 // ---------------------------------------------------------------------------
-// 11. Health check (verifies DB connectivity)
+// 11. Health check
 // ---------------------------------------------------------------------------
-app.get("/health", async (_req: Request, res: Response): Promise<void> => {
-  try {
-    await pool.query("SELECT 1");
-    res.status(200).json({ status: "ok", db: "connected" });
-  } catch {
-    res.status(503).json({ status: "degraded", db: "disconnected" });
-  }
+app.get("/health", (_req: Request, res: Response): void => {
+  res.status(200).json({ status: "ok" });
 });
 
 // ---------------------------------------------------------------------------
@@ -196,32 +188,17 @@ app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: 
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
-async function bootstrap(): Promise<void> {
-  await runMigrations();
-  await seedDevices();
+const server = app.listen(env.PORT, () => {
+  logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
+});
 
-  const server = app.listen(env.PORT, () => {
-    logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
-  });
+// Keep process alive
+const keepAlive = setInterval(() => {}, 1 << 30);
 
-  // ── Graceful shutdown ──────────────────────────────────────────────────
-  const shutdown = async (signal: string) => {
-    logger.info(`${signal} received — shutting down gracefully`);
-    server.close(() => {
-      logger.info("HTTP server closed");
-    });
-    await pool.end();
-    logger.info("Database pool closed");
-    process.exit(0);
-  };
-
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGINT", () => void shutdown("SIGINT"));
-}
-
-bootstrap().catch((err) => {
-  logger.fatal(err, "Bootstrap failed — server not started");
-  process.exit(1);
+process.on("SIGTERM", () => {
+  logger.info("SIGTERM received, shutting down...");
+  clearInterval(keepAlive);
+  server.close();
 });
 
 export default app;
