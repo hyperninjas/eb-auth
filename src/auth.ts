@@ -50,6 +50,30 @@ export const auth = betterAuth({
     },
   },
 
+  // ── User – additional fields ────────────────────────────────────────
+  user: {
+    additionalFields: {
+      isOnboardingDone: {
+        type: "boolean",
+        defaultValue: false,
+        required: false,
+      },
+      onboardingState: {
+        type: "string",
+        defaultValue: "not_started",
+        required: false,
+      },
+      hubId: {
+        type: "string",
+        required: false,
+      },
+      attributes: {
+        type: "json",
+        required: false,
+      },
+    },
+  },
+
   // ── Account Linking ───────────────────────────────────────────────────
   account: {
     accountLinking: {

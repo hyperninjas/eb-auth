@@ -38,6 +38,16 @@ const migrations: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_device_mac        ON device (mac_address);
     `,
   },
+  {
+    name: "002_user_custom_indexes",
+    sql: `
+      -- Better Auth CLI creates the columns via additionalFields config.
+      -- We only add indexes for query performance here.
+      CREATE INDEX IF NOT EXISTS idx_user_hub_id      ON "user" ("hubId");
+      CREATE INDEX IF NOT EXISTS idx_user_onboarding  ON "user" ("isOnboardingDone");
+      CREATE INDEX IF NOT EXISTS idx_user_attributes   ON "user" USING GIN ("attributes");
+    `,
+  },
 ];
 
 // PostgreSQL advisory lock key (arbitrary but fixed)
