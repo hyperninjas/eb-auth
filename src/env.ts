@@ -17,6 +17,7 @@ export const env = {
   BETTER_AUTH_SECRET: requireEnv("BETTER_AUTH_SECRET"),
   BETTER_AUTH_URL: process.env["BETTER_AUTH_URL"] ?? "http://localhost:3000",
   DATABASE_URL: requireEnv("DATABASE_URL"),
+  DATABASE_SSL: process.env["DATABASE_SSL"] ?? "false",
   GOOGLE_CLIENT_ID: requireEnv("GOOGLE_CLIENT_ID"),
   GOOGLE_CLIENT_SECRET: requireEnv("GOOGLE_CLIENT_SECRET"),
 } as const;
