@@ -50,6 +50,11 @@ export const auth = betterAuth({
         required: false,
         input: true,
       },
+      attributes: {
+        type: "json",
+        required: false,
+        input: true,
+      },
     },
   },
 
@@ -80,37 +85,6 @@ export const auth = betterAuth({
     google: {
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
-    },
-  },
-
-  // ── User - additional fields ────────────────────────────────────────
-  user: {
-    additionalFields: {
-      isOnboardingDone: {
-        type: "boolean",
-        defaultValue: false,
-        required: false,
-        input: true,
-
-      },
-      onboardingState: {
-        type: "string",
-        defaultValue: "not_started",
-        required: false,
-        input: true,
-
-      },
-      hubId: {
-        type: "string",
-        required: false,
-        input: true,
-
-      },
-      attributes: {
-        type: "json",
-        required: false,
-        input: true,
-      },
     },
   },
 
