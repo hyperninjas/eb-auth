@@ -10,8 +10,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "db:migrate": "npx @better-auth/cli migrate",
-    "db:generate": "npx @better-auth/cli generate",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "db:generate": "npx @better-auth/cli generate"
   },
   "keywords": [],
   "author": "",

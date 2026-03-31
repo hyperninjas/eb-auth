@@ -13,6 +13,7 @@ import { toNodeHandler } from "better-auth/node";
 import { env, isProduction } from "./env.js";
 import { auth } from "./auth.js";
 import { logger, httpLogger } from "./logger.js";
+import devicesRouter from "./routes/devices.js";
 
 const app: Express = express();
 
@@ -156,7 +157,12 @@ app.use(hpp());
 app.use(cookieParser());
 
 // ---------------------------------------------------------------------------
-// 10. Health check
+// 10. Device management API (authenticated)
+// ---------------------------------------------------------------------------
+app.use("/api/devices", devicesRouter);
+
+// ---------------------------------------------------------------------------
+// 11. Health check
 // ---------------------------------------------------------------------------
 app.get("/health", (_req: Request, res: Response): void => {
   res.status(200).json({ status: "ok" });
