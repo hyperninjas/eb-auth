@@ -1,26 +1,45 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { pool } from "../db.js";
 import { authGuard } from "../middleware/auth-guard.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { conflict, notFound } from "../errors/app-error.js";
 import { logger } from "../logger.js";
 
 const router: Router = Router();
-const DEVICES_FILE = join(process.cwd(), "data", "devices.json");
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface Device {
+interface DeviceRow {
+  id: string;
+  device_id: string;
+  rfid: string;
+  mac_address: string;
+  name: string | null;
+  created_at: Date;
+  created_by: string;
+}
+
+interface DeviceDTO {
   id: string;
   deviceId: string;
   rfid: string;
   macAddress: string;
-  name?: string | undefined;
+  name: string | null;
   createdAt: string;
   createdBy: string;
+}
+
+function toDTO(row: DeviceRow): DeviceDTO {
+  return {
+    id: row.id,
+    deviceId: row.device_id,
+    rfid: row.rfid,
+    macAddress: row.mac_address,
+    name: row.name,
+    createdAt: row.created_at.toISOString(),
+    createdBy: row.created_by,
+  };
 }
 
 // ── Zod Schemas ────────────────────────────────────────────────────────────
@@ -49,6 +68,11 @@ const createDeviceSchema = z.object({
     .optional(),
 });
 
+const listQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
 const verifyQuerySchema = z
   .object({
     deviceId: z.string().trim().min(1).optional(),
@@ -72,25 +96,37 @@ const idParamSchema = z.object({
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-async function readDevices(): Promise<Device[]> {
-  const raw = await readFile(DEVICES_FILE, "utf-8");
-  return JSON.parse(raw) as Device[];
-}
-
-async function writeDevices(devices: Device[]): Promise<void> {
-  await writeFile(DEVICES_FILE, JSON.stringify(devices, null, 2) + "\n", "utf-8");
-}
-
-/**
- * Wraps an async route handler so thrown errors are forwarded to Express
- * error middleware instead of causing unhandled promise rejections.
- */
 function asyncHandler(
   fn: (req: Request, res: Response, next: NextFunction) => Promise<void>,
 ) {
   return (req: Request, res: Response, next: NextFunction) => {
     fn(req, res, next).catch(next);
   };
+}
+
+/**
+ * Maps PostgreSQL unique-constraint violation (23505) to a user-friendly
+ * conflict error indicating which field caused the duplicate.
+ */
+function handleUniqueViolation(err: unknown): never {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: string }).code === "23505"
+  ) {
+    const constraint = (err as { constraint?: string }).constraint ?? "";
+    const field = constraint.includes("device_id")
+      ? "deviceId"
+      : constraint.includes("rfid")
+        ? "rfid"
+        : constraint.includes("mac")
+          ? "macAddress"
+          : "deviceId, rfid, or macAddress";
+
+    throw conflict(`A device with this ${field} already exists.`);
+  }
+  throw err;
 }
 
 // ── All routes require authentication ──────────────────────────────────────
@@ -104,39 +140,26 @@ router.post(
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const body = createDeviceSchema.parse(req.body);
 
-    const devices = await readDevices();
-
-    const duplicateOn = devices.find((d) => d.deviceId === body.deviceId)
-      ? "deviceId"
-      : devices.find((d) => d.rfid === body.rfid)
-        ? "rfid"
-        : devices.find(
-              (d) => d.macAddress.toLowerCase() === body.macAddress.toLowerCase(),
-            )
-          ? "macAddress"
-          : null;
-
-    if (duplicateOn) {
-      throw conflict(
-        `A device with this ${duplicateOn} already exists.`,
+    try {
+      const { rows } = await pool.query<DeviceRow>(
+        `INSERT INTO device (device_id, rfid, mac_address, name, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [
+          body.deviceId,
+          body.rfid,
+          body.macAddress.toUpperCase(),
+          body.name ?? null,
+          req.user!.id,
+        ],
       );
+
+      const device = rows[0]!;
+      logger.info(`[DEVICE] Registered device ${device.id} by user ${req.user!.id}`);
+      res.status(201).json(toDTO(device));
+    } catch (err) {
+      handleUniqueViolation(err);
     }
-
-    const newDevice: Device = {
-      id: randomUUID(),
-      deviceId: body.deviceId,
-      rfid: body.rfid,
-      macAddress: body.macAddress.toUpperCase(),
-      name: body.name,
-      createdAt: new Date().toISOString(),
-      createdBy: req.user!.id,
-    };
-
-    devices.push(newDevice);
-    await writeDevices(devices);
-
-    logger.info(`[DEVICE] Registered device ${newDevice.id} by user ${req.user!.id}`);
-    res.status(201).json(newDevice);
   }),
 );
 
@@ -144,9 +167,29 @@ router.post(
 
 router.get(
   "/",
-  asyncHandler(async (_req: Request, res: Response): Promise<void> => {
-    const devices = await readDevices();
-    res.json(devices);
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { page, limit } = listQuerySchema.parse(req.query);
+    const offset = (page - 1) * limit;
+
+    const [dataResult, countResult] = await Promise.all([
+      pool.query<DeviceRow>(
+        "SELECT * FROM device ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        [limit, offset],
+      ),
+      pool.query<{ count: string }>("SELECT count(*)::text AS count FROM device"),
+    ]);
+
+    const total = Number(countResult.rows[0]!.count);
+
+    res.json({
+      data: dataResult.rows.map(toDTO),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
   }),
 );
 
@@ -155,20 +198,33 @@ router.get(
 router.get(
   "/verify",
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
-    const query = verifyQuerySchema.parse(req.query);
+    const query = verifyQuerySchema.parse(req.
+      query);
 
-    const devices = await readDevices();
+    const conditions: string[] = [];
+    const values: string[] = [];
+    let idx = 1;
 
-    const found = devices.find(
-      (d) =>
-        (query.deviceId && d.deviceId === query.deviceId) ||
-        (query.rfid && d.rfid === query.rfid) ||
-        (query.macAddress &&
-          d.macAddress.toLowerCase() === query.macAddress.toLowerCase()),
+    if (query.deviceId) {
+      conditions.push(`device_id = $${idx++}`);
+      values.push(query.deviceId);
+    }
+    if (query.rfid) {
+      conditions.push(`rfid = $${idx++}`);
+      values.push(query.rfid);
+    }
+    if (query.macAddress) {
+      conditions.push(`mac_address = $${idx++}`);
+      values.push(query.macAddress.toUpperCase());
+    }
+
+    const { rows } = await pool.query<DeviceRow>(
+      `SELECT * FROM device WHERE ${conditions.join(" OR ")} LIMIT 1`,
+      values,
     );
 
-    if (found) {
-      res.json({ exists: true, device: found });
+    if (rows.length > 0) {
+      res.json({ exists: true, device: toDTO(rows[0]!) });
     } else {
       res.json({ exists: false });
     }
@@ -182,18 +238,18 @@ router.delete(
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const { id } = idParamSchema.parse(req.params);
 
-    const devices = await readDevices();
-    const index = devices.findIndex((d) => d.id === id);
+    const { rows } = await pool.query<DeviceRow>(
+      "DELETE FROM device WHERE id = $1 RETURNING *",
+      [id],
+    );
 
-    if (index === -1) {
+    if (rows.length === 0) {
       throw notFound("Device not found.");
     }
 
-    const [removed] = devices.splice(index, 1);
-    await writeDevices(devices);
-
-    logger.info(`[DEVICE] Deleted device ${removed!.id} by user ${req.user!.id}`);
-    res.json({ message: "Device deleted.", device: removed });
+    const removed = rows[0]!;
+    logger.info(`[DEVICE] Deleted device ${removed.id} by user ${req.user!.id}`);
+    res.json({ message: "Device deleted.", device: toDTO(removed) });
   }),
 );
 

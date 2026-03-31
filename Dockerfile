@@ -16,17 +16,16 @@ FROM node:22-alpine AS runtime
 RUN corepack enable && corepack prepare pnpm@10.20.0 --activate
 WORKDIR /app
 
-# Copy all dependencies (includes @better-auth/cli for migrations)
+# Copy all dependencies (includes @better-auth/cli for auth migrations)
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod=false
 
-# Copy compiled output, source (needed by CLI to read auth config), and data
+# Copy compiled output and source (needed by better-auth CLI)
 COPY --from=build /app/dist ./dist
 COPY src ./src
-COPY data ./data
 
 ENV NODE_ENV=production
 EXPOSE 3000
 
-# Run migrations then start the server
+# Better Auth CLI migrates auth tables, then our app migrates device tables on startup
 CMD ["sh", "-c", "npx @better-auth/cli migrate --yes && node dist/server.js"]
