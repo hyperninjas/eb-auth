@@ -14,6 +14,9 @@ import { env, isProduction } from "./env.js";
 import { auth } from "./auth.js";
 import { logger, httpLogger } from "./logger.js";
 import devicesRouter from "./routes/devices.js";
+import { runMigrations } from "./db/migrate.js";
+import { seedDevices } from "./db/seed.js";
+import { pool } from "./db.js";
 
 const app: Express = express();
 
@@ -44,11 +47,31 @@ app.use(
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
-        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net"],
-        styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://fonts.googleapis.com"],
+        scriptSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "'unsafe-eval'",
+          "https://cdn.jsdelivr.net",
+        ],
+        styleSrc: [
+          "'self'",
+          "'unsafe-inline'",
+          "https://cdn.jsdelivr.net",
+          "https://fonts.googleapis.com",
+        ],
         imgSrc: ["'self'", "data:", "https://cdn.jsdelivr.net"],
-        connectSrc: ["'self'", "https://cdn.jsdelivr.net", "https://api.scalar.com"],
-        fontSrc: ["'self'", "https://cdn.jsdelivr.net", "https://fonts.gstatic.com", "https://fonts.googleapis.com", "https://fonts.scalar.com"],
+        connectSrc: [
+          "'self'",
+          "https://cdn.jsdelivr.net",
+          "https://api.scalar.com",
+        ],
+        fontSrc: [
+          "'self'",
+          "https://cdn.jsdelivr.net",
+          "https://fonts.gstatic.com",
+          "https://fonts.googleapis.com",
+          "https://fonts.scalar.com",
+        ],
         workerSrc: ["'self'", "blob:"],
         objectSrc: ["'none'"],
         frameSrc: ["'none'"],
@@ -56,7 +79,7 @@ app.use(
         formAction: ["'self'"],
       },
     },
-  })
+  }),
 );
 
 const strictHelmet = helmet({
@@ -95,7 +118,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
     maxAge: 600,
-  })
+  }),
 );
 
 // ---------------------------------------------------------------------------
@@ -140,7 +163,7 @@ app.use("/api/auth", authLimiter);
 app.all("/api/auth/*splat", toNodeHandler(auth));
 
 // ---------------------------------------------------------------------------
-// 7. Body Parsing with size limits (OWASP A08 – Software & Data Integrity)
+// 7. Body Parsing with size limits (OWASP A08 - Software & Data Integrity)
 //    Applied to all non-auth routes below.
 // ---------------------------------------------------------------------------
 app.use(express.json({ limit: "10kb" }));
@@ -162,10 +185,15 @@ app.use(cookieParser());
 app.use("/api/devices", devicesRouter);
 
 // ---------------------------------------------------------------------------
-// 11. Health check
+// 11. Health check (verifies DB connectivity)
 // ---------------------------------------------------------------------------
-app.get("/health", (_req: Request, res: Response): void => {
-  res.status(200).json({ status: "ok" });
+app.get("/health", async (_req: Request, res: Response): Promise<void> => {
+  try {
+    await pool.query("SELECT 1");
+    res.status(200).json({ status: "ok", db: "connected" });
+  } catch {
+    res.status(503).json({ status: "degraded", db: "disconnected" });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -178,27 +206,50 @@ app.use((_req: Request, res: Response): void => {
 // ---------------------------------------------------------------------------
 // 12. Global error handler (OWASP A09 – Security Logging & Monitoring)
 // ---------------------------------------------------------------------------
-app.use((err: Error & { status?: number }, _req: Request, res: Response, _next: NextFunction): void => {
-  logger.error(err);
-  res.status(err.status ?? 500).json({
-    error: isProduction ? "Internal server error" : err.message,
-  });
-});
+app.use(
+  (
+    err: Error & { status?: number },
+    _req: Request,
+    res: Response,
+    _next: NextFunction,
+  ): void => {
+    logger.error(err);
+    res.status(err.status ?? 500).json({
+      error: isProduction ? "Internal server error" : err.message,
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
-const server = app.listen(env.PORT, () => {
-  logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
-});
 
-// Keep process alive
-const keepAlive = setInterval(() => {}, 1 << 30);
+async function bootstrap(): Promise<void> {
+  await runMigrations();
+  await seedDevices();
 
-process.on("SIGTERM", () => {
-  logger.info("SIGTERM received, shutting down...");
-  clearInterval(keepAlive);
-  server.close();
+  const server = app.listen(env.PORT, () => {
+    logger.info(`Server running on port ${env.PORT} [${env.NODE_ENV}]`);
+  });
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────
+  const shutdown = async (signal: string) => {
+    logger.info(`${signal} received — shutting down gracefully`);
+    server.close(() => {
+      logger.info("HTTP server closed");
+    });
+    await pool.end();
+    logger.info("Database pool closed");
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+}
+
+bootstrap().catch((err) => {
+  logger.fatal(err, "Bootstrap failed — server not started");
+  process.exit(1);
 });
 
 export default app;
