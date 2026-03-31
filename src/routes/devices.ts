@@ -1,8 +1,11 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
 import { authGuard } from "../middleware/auth-guard.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { conflict, notFound } from "../errors/app-error.js";
 import { logger } from "../logger.js";
 
 const router: Router = Router();
@@ -20,6 +23,53 @@ interface Device {
   createdBy: string;
 }
 
+// ── Zod Schemas ────────────────────────────────────────────────────────────
+
+const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
+
+const createDeviceSchema = z.object({
+  deviceId: z
+    .string({ error: "deviceId is required and must be a string." })
+    .trim()
+    .min(1, "deviceId must not be empty.")
+    .max(100, "deviceId must be at most 100 characters."),
+  rfid: z
+    .string({ error: "rfid is required and must be a string." })
+    .trim()
+    .min(1, "rfid must not be empty.")
+    .max(100, "rfid must be at most 100 characters."),
+  macAddress: z
+    .string({ error: "macAddress is required and must be a string." })
+    .trim()
+    .regex(MAC_REGEX, "macAddress must be a valid MAC address (e.g. AA:BB:CC:DD:EE:FF)."),
+  name: z
+    .string()
+    .trim()
+    .max(200, "name must be at most 200 characters.")
+    .optional(),
+});
+
+const verifyQuerySchema = z
+  .object({
+    deviceId: z.string().trim().min(1).optional(),
+    rfid: z.string().trim().min(1).optional(),
+    macAddress: z
+      .string()
+      .trim()
+      .regex(MAC_REGEX, "macAddress must be a valid MAC address.")
+      .optional(),
+  })
+  .refine(
+    (data) => data.deviceId || data.rfid || data.macAddress,
+    { message: "Provide at least one of: deviceId, rfid, macAddress." },
+  );
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const idParamSchema = z.object({
+  id: z.string().regex(UUID_REGEX, "id must be a valid UUID."),
+});
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 async function readDevices(): Promise<Device[]> {
@@ -31,7 +81,17 @@ async function writeDevices(devices: Device[]): Promise<void> {
   await writeFile(DEVICES_FILE, JSON.stringify(devices, null, 2) + "\n", "utf-8");
 }
 
-const MAC_RE = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
+/**
+ * Wraps an async route handler so thrown errors are forwarded to Express
+ * error middleware instead of causing unhandled promise rejections.
+ */
+function asyncHandler(
+  fn: (req: Request, res: Response, next: NextFunction) => Promise<void>,
+) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch(next);
+  };
+}
 
 // ── All routes require authentication ──────────────────────────────────────
 
@@ -39,41 +99,35 @@ router.use(authGuard);
 
 // ── POST /api/devices — Register a new device ─────────────────────────────
 
-router.post("/", async (req: Request, res: Response): Promise<void> => {
-  const { deviceId, rfid, macAddress, name } = req.body ?? {};
+router.post(
+  "/",
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const body = createDeviceSchema.parse(req.body);
 
-  if (!deviceId || !rfid || !macAddress) {
-    res.status(400).json({ error: "deviceId, rfid, and macAddress are required." });
-    return;
-  }
-
-  if (typeof deviceId !== "string" || typeof rfid !== "string" || typeof macAddress !== "string") {
-    res.status(400).json({ error: "deviceId, rfid, and macAddress must be strings." });
-    return;
-  }
-
-  if (!MAC_RE.test(macAddress)) {
-    res.status(400).json({ error: "macAddress must be a valid MAC address (e.g. AA:BB:CC:DD:EE:FF)." });
-    return;
-  }
-
-  try {
     const devices = await readDevices();
 
-    const duplicate = devices.find(
-      (d) => d.deviceId === deviceId || d.rfid === rfid || d.macAddress.toLowerCase() === macAddress.toLowerCase()
-    );
-    if (duplicate) {
-      res.status(409).json({ error: "A device with this deviceId, rfid, or macAddress already exists." });
-      return;
+    const duplicateOn = devices.find((d) => d.deviceId === body.deviceId)
+      ? "deviceId"
+      : devices.find((d) => d.rfid === body.rfid)
+        ? "rfid"
+        : devices.find(
+              (d) => d.macAddress.toLowerCase() === body.macAddress.toLowerCase(),
+            )
+          ? "macAddress"
+          : null;
+
+    if (duplicateOn) {
+      throw conflict(
+        `A device with this ${duplicateOn} already exists.`,
+      );
     }
 
     const newDevice: Device = {
       id: randomUUID(),
-      deviceId,
-      rfid,
-      macAddress: macAddress.toUpperCase(),
-      name: typeof name === "string" ? name : undefined,
+      deviceId: body.deviceId,
+      rfid: body.rfid,
+      macAddress: body.macAddress.toUpperCase(),
+      name: body.name,
       createdAt: new Date().toISOString(),
       createdBy: req.user!.id,
     };
@@ -83,43 +137,34 @@ router.post("/", async (req: Request, res: Response): Promise<void> => {
 
     logger.info(`[DEVICE] Registered device ${newDevice.id} by user ${req.user!.id}`);
     res.status(201).json(newDevice);
-  } catch (err) {
-    logger.error(err, "Failed to register device");
-    res.status(500).json({ error: "Failed to register device." });
-  }
-});
+  }),
+);
 
 // ── GET /api/devices — List all devices ────────────────────────────────────
 
-router.get("/", async (_req: Request, res: Response): Promise<void> => {
-  try {
+router.get(
+  "/",
+  asyncHandler(async (_req: Request, res: Response): Promise<void> => {
     const devices = await readDevices();
     res.json(devices);
-  } catch (err) {
-    logger.error(err, "Failed to read devices");
-    res.status(500).json({ error: "Failed to read devices." });
-  }
-});
+  }),
+);
 
 // ── GET /api/devices/verify — Check if a device exists ─────────────────────
-// Query params: ?deviceId=...  OR  ?rfid=...  OR  ?macAddress=...
 
-router.get("/verify", async (req: Request, res: Response): Promise<void> => {
-  const { deviceId, rfid, macAddress } = req.query;
+router.get(
+  "/verify",
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const query = verifyQuerySchema.parse(req.query);
 
-  if (!deviceId && !rfid && !macAddress) {
-    res.status(400).json({ error: "Provide at least one of: deviceId, rfid, macAddress." });
-    return;
-  }
-
-  try {
     const devices = await readDevices();
 
     const found = devices.find(
       (d) =>
-        (deviceId && d.deviceId === deviceId) ||
-        (rfid && d.rfid === rfid) ||
-        (macAddress && d.macAddress.toLowerCase() === (macAddress as string).toLowerCase())
+        (query.deviceId && d.deviceId === query.deviceId) ||
+        (query.rfid && d.rfid === query.rfid) ||
+        (query.macAddress &&
+          d.macAddress.toLowerCase() === query.macAddress.toLowerCase()),
     );
 
     if (found) {
@@ -127,24 +172,21 @@ router.get("/verify", async (req: Request, res: Response): Promise<void> => {
     } else {
       res.json({ exists: false });
     }
-  } catch (err) {
-    logger.error(err, "Failed to verify device");
-    res.status(500).json({ error: "Failed to verify device." });
-  }
-});
+  }),
+);
 
 // ── DELETE /api/devices/:id — Remove a device ──────────────────────────────
 
-router.delete("/:id", async (req: Request, res: Response): Promise<void> => {
-  const { id } = req.params;
+router.delete(
+  "/:id",
+  asyncHandler(async (req: Request, res: Response): Promise<void> => {
+    const { id } = idParamSchema.parse(req.params);
 
-  try {
     const devices = await readDevices();
     const index = devices.findIndex((d) => d.id === id);
 
     if (index === -1) {
-      res.status(404).json({ error: "Device not found." });
-      return;
+      throw notFound("Device not found.");
     }
 
     const [removed] = devices.splice(index, 1);
@@ -152,10 +194,11 @@ router.delete("/:id", async (req: Request, res: Response): Promise<void> => {
 
     logger.info(`[DEVICE] Deleted device ${removed!.id} by user ${req.user!.id}`);
     res.json({ message: "Device deleted.", device: removed });
-  } catch (err) {
-    logger.error(err, "Failed to delete device");
-    res.status(500).json({ error: "Failed to delete device." });
-  }
-});
+  }),
+);
+
+// ── Router-level error handler ─────────────────────────────────────────────
+
+router.use(errorHandler);
 
 export default router;
