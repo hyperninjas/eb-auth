@@ -50,7 +50,7 @@ export const auth = betterAuth({
     },
   },
 
-  // ── User – additional fields ────────────────────────────────────────
+  // ── User - additional fields ────────────────────────────────────────
   user: {
     additionalFields: {
       isOnboardingDone: {
