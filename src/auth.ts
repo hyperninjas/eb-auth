@@ -20,6 +20,39 @@ export const auth = betterAuth({
   // ── Database ──────────────────────────────────────────────────────────
   database: pool,
 
+  // ── Custom User Fields ────────────────────────────────────────────────
+  user: {
+    additionalFields: {
+      isOnboardingDone: {
+        type: "boolean",
+        defaultValue: false,
+        required: false,
+        input: true,
+      },
+      onboardingStatus: {
+        type: "string",
+        defaultValue: "pending",
+        required: false,
+        input: true,
+      },
+      location: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      postcode: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+      homeName: {
+        type: "string",
+        required: false,
+        input: true,
+      },
+    },
+  },
+
   // ── Email & Password ──────────────────────────────────────────────────
   emailAndPassword: {
     enabled: true,
@@ -132,6 +165,8 @@ export const auth = betterAuth({
           email: user.email,
           name: user.name,
           role: (user as Record<string, unknown>).role ?? "user",
+          isOnboardingDone: user.isOnboardingDone,
+          onboardingStatus: user.onboardingStatus,
         }),
       },
     }),
