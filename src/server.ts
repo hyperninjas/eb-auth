@@ -221,12 +221,9 @@ app.get(
 
     // Parse session token from cookies (cookie parser not yet applied here)
     const cookies = req.headers.cookie || "";
-    const tokenMatch = cookies.match(
-      /(?:__Secure-)?better-auth\.session_token=([^;]+)/,
-    );
-    const sessionToken = tokenMatch
-      ? decodeURIComponent(tokenMatch[1])
-      : null;
+    const [, rawToken] =
+      cookies.match(/(?:__Secure-)?better-auth\.session_token=([^;]+)/) ?? [];
+    const sessionToken = rawToken ? decodeURIComponent(rawToken) : null;
 
     if (sessionToken) {
       res.redirect(
