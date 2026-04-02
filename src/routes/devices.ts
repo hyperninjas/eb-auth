@@ -44,7 +44,7 @@ function toDTO(row: DeviceRow): DeviceDTO {
 
 // ── Zod Schemas ────────────────────────────────────────────────────────────
 
-const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
+// const MAC_REGEX = /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/;
 
 const createDeviceSchema = z.object({
   deviceId: z
@@ -80,7 +80,6 @@ const verifyQuerySchema = z
     macAddress: z
       .string()
       .trim()
-      .regex(MAC_REGEX, "macAddress must be a valid MAC address.")
       .optional(),
   })
   .refine(
@@ -88,10 +87,10 @@ const verifyQuerySchema = z
     { message: "Provide at least one of: deviceId, rfid, macAddress." },
   );
 
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const idParamSchema = z.object({
-  id: z.string().regex(UUID_REGEX, "id must be a valid UUID."),
+  id: z.string()
 });
 
 // ── Helpers ────────────────────────────────────────────────────────────────
