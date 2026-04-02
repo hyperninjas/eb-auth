@@ -59,8 +59,8 @@ const createDeviceSchema = z.object({
     .max(100, "rfid must be at most 100 characters."),
   macAddress: z
     .string({ error: "macAddress is required and must be a string." })
-    .trim()
-    .regex(MAC_REGEX, "macAddress must be a valid MAC address (e.g. AA:BB:CC:DD:EE:FF)."),
+    .trim(),
+    // .regex(MAC_REGEX, "macAddress must be a valid MAC address (e.g. AA:BB:CC:DD:EE:FF)."),
   name: z
     .string()
     .trim()
