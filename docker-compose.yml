@@ -1,0 +1,49 @@
+# Local development dependencies. Run with:
+#
+#   docker compose up -d
+#   pnpm dev
+#
+# Production runs the app via the project Dockerfile, not this file.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eb-auth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eb_auth
+      POSTGRES_PASSWORD: eb_auth
+      POSTGRES_DB: eb_auth
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eb_auth -d eb_auth"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    # Redis 8.6 GA — current stable as of April 2026. ioredis 5.x is
+    # backward-compatible for the standard commands this service uses.
+    image: redis:8-alpine
+    container_name: eb-auth-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  redis-data:

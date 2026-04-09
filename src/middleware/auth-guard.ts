@@ -1,32 +1,43 @@
 import type { Request, Response, NextFunction } from "express";
-import { auth } from "../auth.js";
 import { fromNodeHeaders } from "better-auth/node";
-import { logger } from "../logger.js";
+import { auth } from "../modules/auth/auth";
+import { unauthorized, serviceUnavailable } from "../errors/app-error";
+import { ERROR_CODES } from "../http/openapi-shared";
+import { getLogger } from "../infra/logger";
+import { setUserId } from "../infra/request-context";
 
 /**
- * Express middleware that rejects unauthenticated requests.
- * Attaches `req.session` and `req.user` for downstream handlers.
+ * Rejects unauthenticated requests. Attaches `req.session` / `req.user`
+ * for downstream handlers and tags the request context with the user id
+ * so subsequent log lines carry it automatically.
+ *
+ * Errors are THROWN to `next(err)` so the central error handler formats
+ * them — there are no `res.status().json()` calls here. That guarantees
+ * 401 / 503 from this middleware look identical to the same statuses
+ * produced anywhere else in the app.
  */
-export async function authGuard(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
+export async function authGuard(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
     const session = await auth.api.getSession({
       headers: fromNodeHeaders(req.headers),
     });
 
     if (!session) {
-      res.status(401).json({ status: 401, code: "UNAUTHORIZED", message: "Unauthorized." });
+      next(unauthorized());
       return;
     }
 
     req.session = session.session;
     req.user = session.user;
+    setUserId(session.user.id);
     next();
   } catch (err) {
-    logger.error(err, "Auth guard failed");
-    res.status(503).json({ status: 503, code: "AUTH_UNAVAILABLE", message: "Authentication service temporarily unavailable." });
+    getLogger().error(err, "Auth guard failed");
+    next(
+      serviceUnavailable(
+        "Authentication service temporarily unavailable.",
+        ERROR_CODES.AUTH_UNAVAILABLE,
+      ),
+    );
   }
 }

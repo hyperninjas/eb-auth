@@ -1,0 +1,223 @@
+// Prisma schema for eb-auth.
+//
+// This schema mirrors the tables Better Auth's CLI generated previously,
+// plus the application's own `device` table. After editing or first install
+// run:
+//
+//   pnpm prisma generate
+//   pnpm prisma db pull --print   # to diff against the live DB (no write)
+//   pnpm prisma migrate dev       # to author future migrations
+//
+// Snake_case column/table names are preserved via @map / @@map so the
+// existing database does not need to be rewritten.
+
+// Prisma 7 generator. The new `prisma-client` provider replaces
+// `prisma-client-js`; output is required and the runtime no longer ships
+// the Rust query engine — connections go through @prisma/adapter-pg.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Zod schemas auto-generated from this Prisma schema. Single source of
+// truth for shapes — every Zod schema in `src/modules/<m>/<m>.dto.ts` and
+// `src/modules/<m>/<m>.schema.ts` is built by Pick/Omit/extend on top of
+// these generated schemas. Rename a column here → typecheck flags every
+// downstream usage.
+generator zod {
+  provider = "prisma-zod-generator"
+  output   = "../src/generated/zod"
+}
+
+// Datasource provider only — the connection string lives in
+// `prisma.config.ts` (Prisma 7 moved it out of the schema).
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Better Auth — core
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id
+  name          String
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
+  createdAt     DateTime
+  updatedAt     DateTime
+
+  // admin plugin
+  role       String?
+  banned     Boolean?
+  banReason  String?
+  banExpires DateTime?
+
+  // twoFactor plugin
+  twoFactorEnabled Boolean?
+
+  // additionalFields (configured in modules/auth/auth.ts)
+  isOnboardingDone Boolean @default(false)
+  onboardingStatus String  @default("pending")
+  location         String?
+  postcode         String?
+  homeName         String?
+  houseId          String?
+  attributes       Json?
+
+  sessions    Session[]
+  accounts    Account[]
+  twoFactors  TwoFactor[]
+  members     Member[]
+  invitations Invitation[]
+
+  @@index([houseId])
+  @@index([isOnboardingDone])
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime
+  updatedAt DateTime
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // organization plugin
+  activeOrganizationId String?
+
+  // admin plugin
+  impersonatedBy String?
+
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime
+  updatedAt             DateTime
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String    @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime?
+  updatedAt  DateTime?
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Better Auth — jwt plugin
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Jwks {
+  id         String   @id
+  publicKey  String
+  privateKey String
+  createdAt  DateTime
+
+  @@map("jwks")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Better Auth — twoFactor plugin
+// ─────────────────────────────────────────────────────────────────────────────
+
+model TwoFactor {
+  id          String @id
+  secret      String
+  backupCodes String
+  userId      String
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("twoFactor")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Better Auth — organization plugin
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Organization {
+  id        String   @id
+  name      String
+  slug      String?  @unique
+  logo      String?
+  createdAt DateTime
+  metadata  String?
+
+  members     Member[]
+  invitations Invitation[]
+
+  @@map("organization")
+}
+
+model Member {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String       @default("pending")
+  expiresAt      DateTime
+  inviterId      String
+  inviter        User         @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("invitation")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Application — devices
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Device {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceId   String   @unique @map("device_id") @db.VarChar(100)
+  rfid       String   @unique @db.VarChar(100)
+  macAddress String   @unique @map("mac_address") @db.VarChar(17)
+  name       String?  @db.VarChar(200)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  createdBy  String   @map("created_by") @db.VarChar(64)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("device")
+}

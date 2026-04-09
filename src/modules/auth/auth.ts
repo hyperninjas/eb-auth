@@ -1,15 +1,11 @@
 import { betterAuth } from "better-auth";
-import { logger } from "./logger.js";
-import {
-  admin,
-  bearer,
-  jwt,
-  openAPI,
-  organization,
-  twoFactor,
-} from "better-auth/plugins";
-import { pool } from "./db.js";
-import { env, isProduction } from "./env.js";
+import { prismaAdapter } from "better-auth/adapters/prisma";
+import { redisStorage } from "@better-auth/redis-storage";
+import { admin, bearer, jwt, openAPI, organization, twoFactor } from "better-auth/plugins";
+import { prisma } from "../../infra/prisma";
+import { redis } from "../../infra/redis";
+import { logger } from "../../infra/logger";
+import { env, isProduction } from "../../config/env";
 
 export const auth = betterAuth({
   // ── Core ──────────────────────────────────────────────────────────────
@@ -18,7 +14,16 @@ export const auth = betterAuth({
   trustedOrigins: [env.CORS_ORIGIN],
 
   // ── Database ──────────────────────────────────────────────────────────
-  database: pool,
+  // Primary store: Postgres via Prisma adapter (users, accounts, etc.).
+  database: prismaAdapter(prisma, { provider: "postgresql" }),
+
+  // Secondary store: Redis caches sessions / verification tokens.
+  // Big win at scale — `auth.api.getSession()` becomes an O(1) Redis hit
+  // instead of a Postgres query on every authenticated request.
+  secondaryStorage: redisStorage({
+    client: redis,
+    keyPrefix: "auth:",
+  }),
 
   // ── Custom User Fields ────────────────────────────────────────────────
   user: {
@@ -35,31 +40,11 @@ export const auth = betterAuth({
         required: false,
         input: true,
       },
-      location: {
-        type: "string",
-        required: false,
-        input: true,
-      },
-      postcode: {
-        type: "string",
-        required: false,
-        input: true,
-      },
-      homeName: {
-        type: "string",
-        required: false,
-        input: true,
-      },
-      houseId: {
-        type: "string",
-        required: false,
-        input: true,
-      },
-      attributes: {
-        type: "json",
-        required: false,
-        input: true,
-      },
+      location: { type: "string", required: false, input: true },
+      postcode: { type: "string", required: false, input: true },
+      homeName: { type: "string", required: false, input: true },
+      houseId: { type: "string", required: false, input: true },
+      attributes: { type: "json", required: false, input: true },
     },
   },
 
@@ -69,9 +54,10 @@ export const auth = betterAuth({
     minPasswordLength: 8,
     maxPasswordLength: 128,
     autoSignIn: true,
-    sendResetPassword: async ({ user, url }) => {
+    sendResetPassword: ({ user, url }) => {
       // TODO: integrate a real email provider (Resend, SES, etc.)
       logger.info(`[AUTH] Password reset for ${user.email}: ${url}`);
+      return Promise.resolve();
     },
   },
 
@@ -79,9 +65,9 @@ export const auth = betterAuth({
   emailVerification: {
     sendOnSignUp: true,
     autoSignInAfterVerification: true,
-    sendVerificationEmail: async ({ user, url }) => {
-      // TODO: integrate a real email provider
+    sendVerificationEmail: ({ user, url }) => {
       logger.info(`[AUTH] Verify email for ${user.email}: ${url}`);
+      return Promise.resolve();
     },
   },
 
@@ -95,23 +81,22 @@ export const auth = betterAuth({
 
   // ── Account Linking ───────────────────────────────────────────────────
   account: {
-    accountLinking: {
-      enabled: true,
-      trustedProviders: ["google"],
-    },
+    accountLinking: { enabled: true, trustedProviders: ["google"] },
   },
 
   // ── Session ───────────────────────────────────────────────────────────
   session: {
-    expiresIn: 60 * 60 * 24 * 7,    // 7 days
-    updateAge: 60 * 60 * 24,         // refresh every 24 h
-    cookieCache: {
-      enabled: true,
-      maxAge: 60 * 5,                // 5 min cache
-    },
+    expiresIn: 60 * 60 * 24 * 7, // 7 days
+    updateAge: 60 * 60 * 24, // refresh every 24 h
+    cookieCache: { enabled: true, maxAge: 60 * 5 },
   },
 
   // ── Rate Limiting (Better Auth internal) ──────────────────────────────
+  // Layered with our express-rate-limit limiter — Better Auth's rules are
+  // per-action (sign-in vs sign-up) and use its own counter, while ours
+  // is a coarse per-IP global. Both run; the stricter wins.
+  // With secondaryStorage configured above, Better Auth's counters also
+  // live in Redis so they're shared across replicas.
   rateLimit: {
     enabled: true,
     window: 10,
@@ -133,16 +118,9 @@ export const auth = betterAuth({
 
   // ── Plugins ───────────────────────────────────────────────────────────
   plugins: [
-    // User management (admin panel, list/ban/unban/delete users)
     admin(),
-
-    // OpenAPI spec at /api/auth/reference
     openAPI(),
-
-    // Bearer token auth for mobile / API clients
     bearer(),
-
-    // JWT token auth
     jwt({
       jwt: {
         expirationTime: "7d",
@@ -150,19 +128,13 @@ export const auth = betterAuth({
           id: user.id,
           email: user.email,
           name: user.name,
-          role: (user as Record<string, unknown>).role ?? "user",
-          isOnboardingDone: user.isOnboardingDone,
-          onboardingStatus: user.onboardingStatus,
+          role: (user as Record<string, unknown>)["role"] ?? "user",
+          isOnboardingDone: user["isOnboardingDone"] as boolean | undefined,
+          onboardingStatus: user["onboardingStatus"] as string | undefined,
         }),
       },
     }),
-
-    // Two-factor authentication (TOTP)
-    twoFactor({
-      issuer: "eb-auth",
-    }),
-
-    // Organizations / teams with RBAC
+    twoFactor({ issuer: "eb-auth" }),
     organization(),
   ],
 
@@ -170,15 +142,17 @@ export const auth = betterAuth({
   databaseHooks: {
     session: {
       create: {
-        after: async (session) => {
+        after: (session) => {
           logger.info(`[AUDIT] Session created for user ${session.userId}`);
+          return Promise.resolve();
         },
       },
     },
     user: {
       update: {
-        after: async (user) => {
+        after: (user) => {
           logger.info(`[AUDIT] User updated: ${user.id} (${user.email})`);
+          return Promise.resolve();
         },
       },
     },

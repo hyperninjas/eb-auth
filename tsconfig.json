@@ -1,18 +1,28 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "strict": true,
+    // ── Language ────────────────────────────────────────────────────────
+    "target": "ES2023",
+    "lib": ["ES2023"],
+
+    // ── Module resolution ───────────────────────────────────────────────
+    // Bundler resolution lets us write extensionless imports — tsx (dev),
+    // vitest (tests) and tsdown (prod build) all resolve them. tsc never
+    // emits runnable code in this project (`build` uses tsdown), so we
+    // don't need NodeNext's strict .js requirement.
+    "module": "Preserve",
+    "moduleResolution": "Bundler",
     "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "outDir": "dist",
-    "rootDir": "src",
+    "allowImportingTsExtensions": false,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+
+    // ── Emit ────────────────────────────────────────────────────────────
+    // tsdown handles emit; tsc is type-check only.
+    "noEmit": true,
+
+    // ── Strictness ──────────────────────────────────────────────────────
+    "strict": true,
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -20,8 +30,14 @@
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
-    "isolatedModules": true
+    "useUnknownInCatchVariables": true,
+    "noPropertyAccessFromIndexSignature": true,
+
+    // ── Interop ─────────────────────────────────────────────────────────
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "coverage", "src/generated"]
 }
