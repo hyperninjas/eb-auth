@@ -72,6 +72,11 @@ model User {
   members     Member[]
   invitations Invitation[]
 
+  // Owned by the OPTIONAL shop integration module. If you remove
+  // src/modules/shop/, drop this relation and the UserCommerceProfile
+  // model below in the same migration. Nothing in core depends on it.
+  commerceProfile UserCommerceProfile?
+
   @@index([houseId])
   @@index([isOnboardingDone])
   @@map("user")
@@ -203,6 +208,32 @@ model Invitation {
   @@index([organizationId])
   @@index([email])
   @@map("invitation")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Optional integration — shop (Medusa)
+//
+// Owned by the detachable `src/modules/shop/` integration. Holds the
+// 1:1 mapping between a Better Auth user and the corresponding Medusa
+// `customer.id`. Better Auth remains the source of truth for identity;
+// this table just remembers which Medusa customer record belongs to
+// which of our users so we can attach them to carts server-side.
+//
+// To remove the shop integration entirely:
+//   1. Delete src/modules/shop/
+//   2. Remove the `commerceProfile` relation from the User model above
+//   3. Delete this model
+//   4. `pnpm prisma migrate dev --name drop_shop_integration`
+// ─────────────────────────────────────────────────────────────────────────────
+
+model UserCommerceProfile {
+  userId           String   @id @map("user_id")
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  medusaCustomerId String   @unique @map("medusa_customer_id") @db.VarChar(64)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("user_commerce_profile")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

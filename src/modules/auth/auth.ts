@@ -6,6 +6,14 @@ import { prisma } from "../../infra/prisma";
 import { redis } from "../../infra/redis";
 import { logger } from "../../infra/logger";
 import { env, isProduction } from "../../config/env";
+// Push-based hook registry. Integration modules (shop, etc.) register
+// post-signup hooks into this file at activation time, and the
+// `databaseHooks.user.create.after` callback below dispatches to all
+// registered hooks at call time. Lookup is at call time (not import
+// time), so this file has zero compile-time dependency on any
+// integration module — auth.ts stays pure and integrations stay
+// independently detachable.
+import { runUserCreateHooks } from "./post-signup-hooks";
 
 export const auth = betterAuth({
   // ── Core ──────────────────────────────────────────────────────────────
@@ -149,6 +157,16 @@ export const auth = betterAuth({
       },
     },
     user: {
+      create: {
+        after: (user) => {
+          logger.info(`[AUDIT] User created: ${user.id} (${user.email})`);
+          // Dispatch to every registered post-signup hook (shop,
+          // notifications, etc.). Fire-and-forget — hook failures
+          // never block signup.
+          runUserCreateHooks({ id: user.id, email: user.email, name: user.name });
+          return Promise.resolve();
+        },
+      },
       update: {
         after: (user) => {
           logger.info(`[AUDIT] User updated: ${user.id} (${user.email})`);

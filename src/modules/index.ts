@@ -1,8 +1,17 @@
 import type { Router } from "express";
 import type { ZodOpenApiPathsObject } from "zod-openapi";
+import type { AppError } from "../errors/app-error";
+import type { DomainError } from "../errors/domain";
 import { authRouter } from "./auth";
 import { devicesPaths, devicesRouter } from "./devices";
 import { healthRouter } from "./health";
+
+// ── Optional integration modules ──────────────────────────────────────────
+// Each block below registers an OPTIONAL third-party integration module.
+// Removing the integration is a 3-line change: delete the import, delete
+// the conditional push, delete the module folder under `src/modules/<m>`.
+// No core file (env.ts, error-handler.ts, app.ts) needs to be touched.
+import { createShopModule } from "./shop";
 
 /**
  * Module registry — single source of truth for which feature modules are
@@ -36,6 +45,17 @@ export interface AppModule {
    * would otherwise mean health probes can't tell anyone Redis is down).
    */
   bypassRateLimit?: boolean;
+  /**
+   * Optional self-registered domain-error mapper. Returning `undefined`
+   * means "this module doesn't recognise this error, try the next one".
+   *
+   * Why this exists: third-party integration modules (shop/medusa,
+   * future payment/notification/etc.) must NOT require edits to the
+   * central error handler when they're added or removed. This hook lets
+   * each module ship its own DomainError → AppError mapping inside the
+   * module folder, so deleting the folder cleanly removes everything.
+   */
+  mapDomainError?: (err: DomainError) => AppError | undefined;
 }
 
 /**
@@ -68,3 +88,15 @@ export const modules: AppModule[] = [
     openapi: devicesPaths,
   },
 ];
+
+// ── Mount optional integration modules ───────────────────────────────────
+// Each integration module decides for itself (via its own env validation)
+// whether it should activate. `createXModule()` returns `null` when the
+// integration is disabled, so the registry stays empty for that slot
+// without any other file knowing the module exists.
+const optionalModules: AppModule[] = [];
+
+const shop = createShopModule();
+if (shop) optionalModules.push(shop);
+
+modules.push(...optionalModules);

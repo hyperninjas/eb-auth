@@ -12,6 +12,13 @@ export default tseslint.config(
       "coverage/**",
       "src/generated/**",
       "prisma/migrations/**",
+      // The Medusa commerce backend is a separate Node project under
+      // commerce/. It has its own tsconfig, its own dep tree, and its
+      // own conventions (Medusa starter style); the parent linter must
+      // not touch it. To lint commerce/ source you'd add an ESLint
+      // setup inside that folder, but right now the project doesn't
+      // need one.
+      "commerce/**",
       // Self-ignore: meta-config doesn't need linting and is the only file
       // not picked up by typescript-eslint's project service.
       "eslint.config.js",

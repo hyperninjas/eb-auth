@@ -3,6 +3,12 @@
 #   docker compose up -d
 #   pnpm dev
 #
+# The optional `medusa` service is part of the shop integration. It is
+# in the default profile so `docker compose up -d` boots it; to skip
+# it (e.g. when shop is disabled) set SHOP_ENABLED=false in your env
+# and use `docker compose up -d postgres redis` to start only the
+# core dependencies.
+#
 # Production runs the app via the project Dockerfile, not this file.
 
 services:
@@ -24,6 +30,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      # Init scripts run ONCE on first volume creation. The shop
+      # integration's init script creates the second `medusa` database
+      # alongside `eb_auth`. On an existing volume the script is
+      # skipped — see commerce/README.md for the manual createdb step.
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U eb_auth -d eb_auth"]
       interval: 5s
@@ -49,6 +60,64 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  # ── Optional integration: Medusa commerce backend ──────────────────────
+  # Source lives in `commerce/`. Talks to the same Postgres + Redis as
+  # the parent service but on a separate database (`medusa`) and Redis
+  # logical DB (`/1`). Browsers NEVER hit this service directly — the
+  # parent eb-auth service exposes /api/shop/* as a server-to-server
+  # proxy in front of it.
+  #
+  # First boot will be slow (npm install + db:migrate). Subsequent
+  # boots reuse the cached image and only re-run migrations.
+  medusa:
+    build:
+      context: ./commerce
+      dockerfile: Dockerfile
+    container_name: eb-auth-medusa
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      TZ: UTC
+      # In-network DNS resolution: `postgres` and `redis` resolve to
+      # the sibling service containers via docker-compose's default
+      # network. The medusa database is created by the postgres init
+      # script (or manually — see commerce/README.md).
+      #
+      # `?sslmode=disable` is required because Medusa's pg driver
+      # negotiates SSL by default for non-localhost hosts, and our
+      # local postgres:16-alpine image is not built with SSL. In
+      # production, point this at a database with TLS and drop the
+      # query string.
+      DATABASE_URL: postgresql://eb_auth:eb_auth@postgres:5432/medusa?sslmode=disable
+      # Redis logical DB 1 keeps Medusa's session/event/cache keys
+      # isolated from eb-auth's keys on DB 0.
+      REDIS_URL: redis://redis:6379/1
+      # Local-dev secrets. REPLACE these in any non-local environment
+      # — they're hard-coded here only so a fresh clone "just works".
+      JWT_SECRET: dev-medusa-jwt-secret-not-for-prod-use-only
+      COOKIE_SECRET: dev-medusa-cookie-secret-not-for-prod-use-only
+      # CORS: store API has no browser caller (the eb-auth proxy is
+      # the only client and CORS doesn't apply to server-to-server).
+      # Admin/auth allow the local dashboard origin.
+      STORE_CORS: ""
+      ADMIN_CORS: http://localhost:9000
+      AUTH_CORS: http://localhost:9000
+    ports:
+      # 9000 = Medusa API + admin dashboard. Exposed for ops use only;
+      # the parent service uses the in-network hostname `medusa:9000`.
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
 
 volumes:
   postgres-data:

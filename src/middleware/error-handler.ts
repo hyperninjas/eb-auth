@@ -7,6 +7,7 @@ import { ERROR_CODES, type ErrorResponse, type FieldError } from "../http/openap
 import { getLogger } from "../infra/logger";
 import { getRequestId } from "../infra/request-context";
 import { isProduction } from "../config/env";
+import { modules } from "../modules";
 
 /**
  * Central error handler.
@@ -112,16 +113,26 @@ function sendAppError(res: Response, err: AppError, requestId: string | undefine
 }
 
 /**
- * Maps a domain error to an HTTP-shaped `AppError`. New domain errors get
- * a branch here — keeping the mapping in one place means the service
- * layer can throw freely without ever importing HTTP concepts.
+ * Maps a domain error to an HTTP-shaped `AppError`.
+ *
+ * Resolution order:
+ *   1. Walk every module's optional `mapDomainError` hook. The first
+ *      module that returns a non-undefined `AppError` wins. This is how
+ *      detachable integration modules (e.g. shop/medusa) ship their own
+ *      DomainError → AppError mapping without editing this file.
+ *   2. Fall through to core mappings for first-party domain errors that
+ *      live alongside the central handler (devices, etc.).
+ *   3. As a last resort, treat the error as 500 — this avoids leaking
+ *      an internal class name through a generic message.
  */
 function mapDomainError(err: DomainError): AppError {
+  for (const m of modules) {
+    const mapped = m.mapDomainError?.(err);
+    if (mapped) return mapped;
+  }
   if (err instanceof DeviceNotFoundError) {
     return notFound(err.message);
   }
-  // Fallback: treat unmapped domain errors as 500 to avoid leaking
-  // internal class names through a generic message.
   return new AppError(500, ERROR_CODES.INTERNAL_ERROR, err.message);
 }
 
