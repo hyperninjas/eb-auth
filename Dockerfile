@@ -13,6 +13,10 @@ RUN pnpm install --frozen-lockfile --prod=false
 FROM deps AS build
 COPY tsconfig.json tsdown.config.ts ./
 COPY src ./src
+# Prisma 7's prisma.config.ts strictly requires DATABASE_URL at config-load
+# time. `prisma generate` doesn't actually connect to the DB, so a placeholder
+# is enough to satisfy the env() resolver during the image build.
+ENV DATABASE_URL=postgresql://build:build@localhost:5432/build
 RUN pnpm prisma generate \
  && pnpm run build
 
@@ -23,12 +27,14 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 RUN apk add --no-cache wget
 WORKDIR /app
 
-# Production deps only.
+# Production deps only. The Prisma client is already generated in the build
+# stage and copied in below, so we don't re-run `prisma generate` here —
+# Prisma 7's config strictly requires DATABASE_URL at config-load time, which
+# isn't available at image build time.
 COPY package.json pnpm-lock.yaml ./
 COPY prisma ./prisma
 COPY prisma.config.ts ./
-RUN pnpm install --frozen-lockfile --prod \
- && pnpm prisma generate
+RUN pnpm install --frozen-lockfile --prod
 
 # Compiled output (tsdown writes to dist/) + the generated Prisma client.
 COPY --from=build /app/dist ./dist

@@ -27,7 +27,7 @@
     "prisma:pull": "prisma db pull",
     "auth:generate": "better-auth generate",
     "auth:migrate": "better-auth migrate",
-    "prepare": "simple-git-hooks"
+    "prepare": "simple-git-hooks || true"
   },
   "simple-git-hooks": {
     "pre-commit": "pnpm exec lint-staged"
@@ -64,6 +64,7 @@
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
+    "prisma": "^7.7.0",
     "prom-client": "^15.1.3",
     "rate-limit-redis": "^4.3.1",
     "zod": "^4.3.6",
@@ -84,7 +85,6 @@
     "globals": "^17.4.0",
     "lint-staged": "^16.4.0",
     "prettier": "^3.8.1",
-    "prisma": "^7.7.0",
     "prisma-zod-generator": "^2.1.4",
     "simple-git-hooks": "^2.13.1",
     "tsdown": "^0.21.7",
@@ -95,10 +95,11 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild",
       "@prisma/client",
       "@prisma/engines",
+      "esbuild",
       "prisma",
+      "prisma-zod-generator",
       "simple-git-hooks"
     ],
     "overrides": {
