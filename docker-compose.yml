@@ -14,6 +14,12 @@ services:
       POSTGRES_USER: eb_auth
       POSTGRES_PASSWORD: eb_auth
       POSTGRES_DB: eb_auth
+      # Pin both the container clock and the Postgres session timezone to
+      # UTC. PGTZ is what `SHOW TimeZone;` reports inside psql sessions —
+      # it controls how `timestamptz` values are rendered to clients and
+      # how naive `timestamp` literals get interpreted. Keep both the same.
+      TZ: UTC
+      PGTZ: UTC
     ports:
       - "5432:5432"
     volumes:

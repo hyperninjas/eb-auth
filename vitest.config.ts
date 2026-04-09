@@ -15,6 +15,11 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
+    // Pin the test process to UTC so timezone-sensitive code (Date
+    // formatting, day boundaries, log timestamps) behaves the same on
+    // every dev laptop and on CI. To deliberately catch zone-leak bugs,
+    // run a separate CI job with `TZ=Asia/Kolkata pnpm test`.
+    env: { TZ: "UTC" },
     include: ["src/**/*.{test,spec}.ts"],
     exclude: ["node_modules", "dist", "src/generated"],
     // CI shouldn't fail just because no test files exist yet.

@@ -41,6 +41,11 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/src/generated ./src/generated
 
 ENV NODE_ENV=production
+# Pin the container clock to UTC. Every timestamp the app produces — pino
+# log lines, `new Date()`, Prisma writes — must be in UTC regardless of
+# what the host or k8s node is configured for. Without this, debugging a
+# "1-hour-off" bug across staging/prod is a nightmare.
+ENV TZ=UTC
 # --enable-source-maps maps stack traces from the bundled file back to the
 # original source paths so prod errors stay readable.
 ENV NODE_OPTIONS=--enable-source-maps

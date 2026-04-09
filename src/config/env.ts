@@ -54,3 +54,39 @@ if (!parsed.success) {
 export const env = parsed.data;
 export const isProduction = env.NODE_ENV === "production";
 export const isTest = env.NODE_ENV === "test";
+
+// Refuse to boot unless the process is running in UTC. Every timestamp
+// the app produces — Prisma writes, pino log lines, error stacks, OAuth
+// state expiry — must be UTC, and the simplest way to enforce that is
+// to fail fast at startup if `TZ` (or the host clock) drifted. Running
+// half the fleet in UTC and half in `America/Los_Angeles` is the kind
+// of bug you only notice three months later when a daily report is
+// missing 7 hours of rows.
+//
+// Both checks matter: `process.env.TZ` is what was *requested*; the
+// Intl resolved value is what the runtime is *actually* using. They can
+// disagree if `TZ` was set after `Date` was first touched, or if the
+// container image bakes a different /etc/localtime.
+{
+  const requestedTz = process.env["TZ"];
+  const resolvedTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const tzIsUtc = requestedTz === "UTC" && resolvedTz === "UTC";
+  if (!tzIsUtc) {
+    const message =
+      `Process timezone is not UTC ` +
+      `(TZ=${requestedTz ?? "(unset)"}, ` +
+      `Intl resolved=${resolvedTz}). ` +
+      `Set TZ=UTC in the container/host environment.`;
+    if (isProduction) {
+      // Fail closed in prod. Running pods in mixed zones silently shifts
+      // every Date the app produces and is one of those bugs you find
+      // weeks later in a daily report.
+      console.error(message);
+      process.exit(1);
+    } else {
+      // Warn loudly in dev/test so the developer notices but `pnpm dev`
+      // still works on a laptop set to local time.
+      console.warn(`[env] ${message}`);
+    }
+  }
+}
