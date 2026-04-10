@@ -27,12 +27,9 @@ cmds = ["npm install --no-fund --no-audit --loglevel=warn"]
 cmds = ["NODE_OPTIONS=--max-old-space-size=2048 npm run build"]
 
 [start]
-# 1. ensure-db.sh: creates the database if it doesn't exist — idempotent,
-#    no-op on every deploy after the first. psql connects to the `postgres`
-#    maintenance database on the same host to run CREATE DATABASE.
-# 2. db:migrate: applies any pending Medusa migrations — also idempotent.
-# 3. npm start: serves the compiled output in .medusa/server.
-cmd = "sh scripts/ensure-db.sh && npm run db:migrate && npm start"
+# All startup logic (build fallback, db init, migrations, admin user, server
+# start) lives in scripts/start.sh for readability and testability.
+cmd = "sh scripts/start.sh"
 
 [variables]
 NODE_ENV = "production"

@@ -31,6 +31,14 @@ loadEnv(process.env.NODE_ENV || "development", process.cwd());
 module.exports = defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
+    // Disable SSL at the driver level so all module-level pg connections
+    // respect this setting. The `?sslmode=disable` query param in the URL
+    // is not reliably forwarded by Medusa's per-module connection factory
+    // in @medusajs/modules-sdk — each module builds its own pg connection
+    // and strips query params. This flag is the authoritative override.
+    // In production, remove this and point DATABASE_URL at a TLS-enabled
+    // database instead.
+    databaseDriverOptions: process.env.NODE_ENV !== "production" ? { ssl: false } : undefined,
     redisUrl: process.env.REDIS_URL,
     http: {
       // The proxy is server-to-server, so the eb-auth API origin is
