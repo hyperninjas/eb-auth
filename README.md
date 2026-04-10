@@ -56,24 +56,33 @@ pnpm prisma:studio    # browse DB in Prisma Studio
 
 ## Architecture
 
-```
-src/
-├── config/             env.ts          (zod-validated env)
-├── infra/              prisma.ts redis.ts logger.ts metrics.ts
-│                       request-context.ts
-├── middleware/         request-context http-logger security cors
-│                       rate-limit (Redis) drain auth-guard
-│                       validate metrics error-handler async-handler
-├── modules/            <feature>/<feature>.{routes,controller,service,
-│                       repository,schema,dto,openapi}.ts + index.ts
-│   ├── auth/           Better Auth + mobile OAuth
-│   ├── devices/        Device CRUD
-│   ├── health/         Liveness/readiness
-│   └── index.ts        Module registry — single source of truth
-├── http/               app.ts (createApp) server.ts (bootstrap)
-│                       openapi.ts (zod-openapi document builder)
-├── errors/             AppError + factories
-└── types/              Express request augmentation
+```mermaid
+graph TD
+    Browser["Browser / Client"]
+
+    subgraph eb-auth ["eb-auth service"]
+        MW["Middleware layer\nrequestContext · drain · httpLogger\nmetrics · security · cors · rate-limit\nauthGuard · validate · error-handler"]
+        MOD["Module registry\nauth · devices · health\nshop (optional) · …"]
+        INFRA["Infra singletons\nPrismaClient · ioredis · pino · prom-client"]
+    end
+
+    subgraph Data ["Data stores"]
+        PG[(Postgres)]
+        RD[(Redis)]
+    end
+
+    subgraph Commerce ["Commerce (optional)"]
+        MED["Medusa v2\n:9000"]
+    end
+
+    Browser -->|HTTPS| MW
+    MW --> MOD
+    MOD --> INFRA
+    INFRA --> PG
+    INFRA --> RD
+    MOD -->|server-to-server proxy\n/api/shop/*| MED
+    MED --> PG
+    MED --> RD
 ```
 
 ### Adding a new feature module
@@ -90,20 +99,24 @@ registry, so no other files need to change.
 
 ### Request flow
 
-Every request flows through these middleware in order:
+```mermaid
+flowchart TD
+    REQ["Incoming request"]
 
-1. `requestContext` — assigns `x-request-id`, opens AsyncLocalStorage
-2. `drainMiddleware` — 503s new requests during graceful shutdown
-3. `httpLogger` — pino-http with request id from #1
-4. `metricsMiddleware` — Prometheus duration + count
-5. `security` — strict CSP / HSTS (helmet)
-6. `cors` — env-driven origin allow-list
-7. `globalLimiter` — Redis-backed per-IP rate limit
-8. Body parsers / cookie parser
-9. Module router (with `authGuard` if protected)
-10. `validate({ body, query, params })` per route
-11. Controller → service → repository → Prisma
-12. Module-local error handler → global error handler
+    REQ --> RC["requestContext\nassigns x-request-id · opens AsyncLocalStorage"]
+    RC --> DM["drainMiddleware\n503 new requests during graceful shutdown"]
+    DM --> HL["httpLogger\npino-http correlated with request id"]
+    HL --> MM["metricsMiddleware\nPrometheus duration + count"]
+    MM --> SEC["security\nhelmet — strict CSP / HSTS"]
+    SEC --> COR["cors\nenv-driven origin allow-list"]
+    COR --> RL["globalLimiter\nRedis-backed per-IP rate limit"]
+    RL --> BP["body parsers · cookie parser"]
+    BP --> MR["module router\nauthGuard if protected"]
+    MR --> VAL["validate\nbody · query · params"]
+    VAL --> CTRL["Controller → Service → Repository → Prisma"]
+    CTRL --> EH["error-handler\nglobal — one error shape for all modules"]
+    EH --> RESP["Response"]
+```
 
 ### Tracing
 

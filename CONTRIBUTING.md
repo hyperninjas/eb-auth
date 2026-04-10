@@ -107,25 +107,19 @@ when adding a new module.
 
 ### Type flow (data shapes)
 
-```
-prisma/schema.prisma                            ← THE source of truth
-        │
-        ├── pnpm prisma generate ──┐
-        │                          ↓
-        │                  src/generated/prisma/    (Prisma client + Device type)
-        │                          ↓
-        │                  imported by:
-        │                    - src/infra/prisma.ts
-        │                    - src/modules/<m>/<m>.repository.ts
-        │                    - src/modules/<m>/<m>.dto.ts (toDTO mapper)
-        │
-        └── pnpm prisma generate ──┐
-                                   ↓
-                           src/generated/zod/      (DeviceModelSchema, etc.)
-                                   ↓
-                           imported by:
-                             - src/modules/<m>/<m>.dto.ts        (.extend() for response)
-                             - src/modules/<m>/<m>.schema.ts     (.pick().extend() for input)
+```mermaid
+flowchart TD
+    schema["prisma/schema.prisma\n— THE source of truth —"]
+
+    schema -->|pnpm prisma generate| prismaGen["src/generated/prisma/\nPrisma client · Device type"]
+    schema -->|pnpm prisma generate| zodGen["src/generated/zod/\nDeviceModelSchema · etc."]
+
+    prismaGen --> prismaTs["infra/prisma.ts"]
+    prismaGen --> repo["modules/&lt;m&gt;/&lt;m&gt;.repository.ts"]
+    prismaGen --> dto["modules/&lt;m&gt;/&lt;m&gt;.dto.ts\n(toDTO mapper)"]
+
+    zodGen --> dto
+    zodGen --> schemaTs["modules/&lt;m&gt;/&lt;m&gt;.schema.ts\n.pick().extend() for input"]
 ```
 
 **Rule**: never define a Device-shaped Zod schema by hand. Always
@@ -134,28 +128,24 @@ prisma/schema.prisma                            ← THE source of truth
 
 ### Error flow
 
-```
-                          throw / next(err)
-service / repository ─────────────────────────┐
-   throws DomainError                         │
-                                              ↓
-controller ──────────────────────────────► error-handler.ts
-   throws AppError or                         │
-   wraps Zod via validate()                   │
-                                              ↓
-                                   ┌──────────┴──────────┐
-                                   │  pattern-match err  │
-                                   ├─────────────────────┤
-                                   │ ZodError            │  → 400 VALIDATION_ERROR
-                                   │ Prisma P2002        │  → 409 CONFLICT
-                                   │ AbortError/Timeout  │  → 504 UPSTREAM_TIMEOUT
-                                   │ DomainError         │  → mapDomainError()
-                                   │ AppError            │  → sendAppError()
-                                   │ unknown             │  → 500 INTERNAL_ERROR
-                                   └──────────┬──────────┘
-                                              ↓
-                                   body satisfies ErrorResponse
-                                   (defined in openapi-shared.ts)
+```mermaid
+flowchart TD
+    svc["service / repository\nthrows DomainError"]
+    ctl["controller\nthrows AppError or wraps Zod via validate()"]
+
+    svc -->|throw / next err| eh
+    ctl -->|throw / next err| eh
+
+    eh["error-handler.ts\npattern-matches the error"]
+
+    eh --> zod["ZodError\n→ 400 VALIDATION_ERROR"]
+    eh --> p2002["Prisma P2002\n→ 409 CONFLICT"]
+    eh --> abort["AbortError / Timeout\n→ 504 UPSTREAM_TIMEOUT"]
+    eh --> domain["DomainError\n→ mapDomainError()"]
+    eh --> apperr["AppError\n→ sendAppError()"]
+    eh --> unknown["unknown\n→ 500 INTERNAL_ERROR"]
+
+    zod & p2002 & abort & domain & apperr & unknown --> resp["ErrorResponse body\n(openapi-shared.ts)"]
 ```
 
 **Rule**: there is exactly one place that constructs error response
