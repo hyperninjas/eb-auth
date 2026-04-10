@@ -34,5 +34,10 @@ else
     || echo "Admin user already exists, skipping."
 fi
 
-# ── 5. Start server ───────────────────────────────────────────────────────────
+# ── 5. Diagnose admin build location ─────────────────────────────────────────
+echo "=== .medusa tree ==="
+find .medusa -name "index.html" 2>/dev/null || echo "(no index.html found anywhere in .medusa)"
+echo "=== end tree ==="
+
+# ── 6. Start server ───────────────────────────────────────────────────────────
 exec npm start
