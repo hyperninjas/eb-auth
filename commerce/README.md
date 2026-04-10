@@ -29,7 +29,7 @@ docker compose up -d
 
 # 2. Create an admin user for the Medusa dashboard. Idempotent —
 #    repeat with a different email to add more admins.
-docker compose exec medusa npx medusa user --email admin@local --password adminadmin
+docker compose exec medusa npx medusa user --email admin@example.com --password adminadmin
 
 # 3. Open the Medusa admin dashboard:
 #       http://localhost:9000/app
