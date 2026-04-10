@@ -20,7 +20,11 @@ nixPkgs = ["nodejs_24", "python3", "gnumake", "gcc", "postgresql"]
 cmds = ["npm install --no-fund --no-audit --loglevel=warn"]
 
 [phases.build]
-cmds = ["npm run build"]
+# Medusa's admin dashboard build (Vite) is extremely memory-hungry — it was
+# hitting the default ~1 GB V8 heap limit and OOM-crashing at ~975 MB.
+# 4 GB is enough headroom for the full frontend + backend compile.
+# This only affects the build container, not the running server.
+cmds = ["NODE_OPTIONS=--max-old-space-size=4096 npm run build"]
 
 [start]
 # 1. ensure-db.sh: creates the database if it doesn't exist — idempotent,

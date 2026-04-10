@@ -11,7 +11,8 @@
     "build": "medusa build",
     "start": "medusa start",
     "dev": "medusa develop",
-    "db:migrate": "medusa db:migrate"
+    "db:migrate": "medusa db:migrate",
+    "db:admin": "medusa user --email admin@example.com --password supersecret"
   },
   "dependencies": {
     "@medusajs/admin-sdk": "2.13.6",
