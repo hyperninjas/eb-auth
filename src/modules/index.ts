@@ -12,6 +12,7 @@ import { healthRouter } from "./health";
 // the conditional push, delete the module folder under `src/modules/<m>`.
 // No core file (env.ts, error-handler.ts, app.ts) needs to be touched.
 import { createShopModule } from "./shop";
+import { createEpcModule } from "./epc";
 
 /**
  * Module registry — single source of truth for which feature modules are
@@ -98,5 +99,8 @@ const optionalModules: AppModule[] = [];
 
 const shop = createShopModule();
 if (shop) optionalModules.push(shop);
+
+const epc = createEpcModule();
+if (epc) optionalModules.push(epc);
 
 modules.push(...optionalModules);
