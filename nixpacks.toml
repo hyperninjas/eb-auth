@@ -1,0 +1,35 @@
+# Nixpacks build configuration — used by Dokploy (and any other Nixpacks-based
+# platform) as an alternative to the multi-stage Dockerfile.
+#
+# Nixpacks auto-detects Node 24 from engines.node in package.json and pnpm
+# from pnpm-lock.yaml, so only the non-obvious overrides are spelled out here.
+
+[phases.setup]
+# Explicit Node 24 pin. corepack ships with Node, so enabling it here is
+# enough — no separate pnpm nix package needed.
+nixPkgs = ["nodejs_24"]
+cmds    = ["corepack enable && corepack prepare pnpm@10.33.0 --activate"]
+
+[phases.install]
+cmds = ["pnpm install --frozen-lockfile"]
+
+[phases.build]
+# Prisma 7's prisma.config.ts resolves env() at config-load time, so
+# DATABASE_URL must be present even during `prisma generate` (which never
+# actually connects). A placeholder satisfies the resolver without touching
+# any real database. See the same note in the Dockerfile.
+cmds = ["DATABASE_URL=postgresql://build:build@localhost:5432/build pnpm run build"]
+
+[start]
+# Run pending migrations before starting the server. This matches the CMD in
+# the Dockerfile. Dokploy/Nixpacks exposes DATABASE_URL as a runtime env var,
+# so migrate deploy can reach the real database here.
+cmd = "pnpm prisma migrate deploy && node dist/server.mjs"
+
+[variables]
+NODE_ENV    = "production"
+# Pin the clock to UTC so every timestamp — pino logs, new Date(), Prisma
+# writes — is consistent regardless of host timezone. Matches the Dockerfile.
+TZ          = "UTC"
+# Maps bundled stack traces back to original source paths in prod errors.
+NODE_OPTIONS = "--enable-source-maps"
