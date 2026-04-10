@@ -14,6 +14,11 @@ quick "what is this?" overview, read [README.md](README.md) first.
 7. [Debugging](#debugging)
 8. [Pre-commit, CI, and deploy](#pre-commit-ci-and-deploy)
 
+> **Two reference implementations**:
+>
+> - Feature module (owns its own DB table, has CRUD): `src/modules/devices/`
+> - Integration module (wraps an external API/service): `src/modules/shop/`
+
 ---
 
 ## Setup & daily workflow
@@ -61,7 +66,9 @@ src/
 ├── modules/                feature modules — one folder each
 │   ├── index.ts            module REGISTRY (single source of truth)
 │   ├── auth/               Better Auth + auth router
-│   ├── devices/            CRUD example (use this as a template)
+│   │   └── post-signup-hooks.ts  push-based hook registry for post-signup logic
+│   ├── devices/            CRUD feature module — use as template for new features
+│   ├── shop/               Medusa integration — use as template for new integrations
 │   └── health/             /livez /readyz /health
 ├── http/                   the Express app itself
 │   ├── app.ts              createApp() — builds the app, no listen
@@ -239,6 +246,185 @@ doing it wrong — throw via `next(err)` instead.
 | `as any` casts                                                                                | Define a narrow local interface and cast through that              |
 
 ## How-to recipes
+
+### Add a new external service integration (integration module)
+
+Use this recipe when you're connecting to a third-party REST API, SaaS platform,
+or any external service — a payment provider, email/SMS service, search index,
+analytics backend, etc. The canonical reference implementation is `src/modules/shop/`.
+
+The defining property of this pattern: adding or removing the integration touches
+**zero core files** except two lines in `src/modules/index.ts`.
+
+#### 1. Create the module folder
+
+```bash
+mkdir src/modules/<integration>
+```
+
+Create these files (replace `<m>` with your integration name, e.g. `email`):
+
+```
+src/modules/<m>/
+├── index.ts          ← ONLY public export: create<M>Module() → AppModule | null
+├── <m>.config.ts     ← module-local Zod env schema + load<M>Config()
+├── <m>.client.ts     ← HTTP client (typed methods for calls your code makes itself)
+├── <m>.errors.ts     ← DomainError subclasses + map<M>DomainError()
+└── <m>.repository.ts ← (if needed) Prisma calls for the module's own tables
+```
+
+Add a proxy router file if you're forwarding browser requests to the upstream:
+
+```
+├── <m>.proxy.ts      ← Router.all("/<prefix>/*splat") catch-all proxy
+```
+
+Add a provisioning file if users need a linked account in the external system:
+
+```
+└── <m>.provision.ts  ← 3-layer fallback chain (see below)
+```
+
+#### 2. Module-local env validation (`<m>.config.ts`)
+
+Do **not** add vars to `src/config/env.ts`. Keep them here:
+
+```ts
+import { z } from "zod";
+
+// Treat blank strings as absent — .env files often have VAR= with no value.
+const blankAsUndefined = (v: unknown): unknown =>
+  typeof v === "string" && v.trim() === "" ? undefined : v;
+
+const Schema = z.object({
+  <M>_ENABLED: z.string().optional().transform((v) => v === "true"),
+  <M>_API_URL:   z.preprocess(blankAsUndefined, z.url().optional()),
+  <M>_API_TOKEN: z.preprocess(blankAsUndefined, z.string().min(1).optional()),
+  // ...more vars
+});
+
+export interface <M>Config { enabled: boolean; apiUrl: string; apiToken: string; }
+
+export function load<M>Config(): <M>Config | null {
+  const parsed = Schema.safeParse(process.env);
+  if (!parsed.success) throw new Error(`<M> env validation failed: ...`);
+  const env = parsed.data;
+  if (!env.<M>_ENABLED) return null;    // ← master switch; returns null = disabled
+
+  // Collect ALL missing vars before throwing (one complete error message > many).
+  const missing: string[] = [];
+  if (!env.<M>_API_URL)   missing.push("<M>_API_URL");
+  if (!env.<M>_API_TOKEN) missing.push("<M>_API_TOKEN");
+  if (missing.length > 0)
+    throw new Error(`<M>_ENABLED=true but missing: ${missing.join(", ")}`);
+
+  return { enabled: true, apiUrl: env.<M>_API_URL!, apiToken: env.<M>_API_TOKEN! };
+}
+```
+
+#### 3. Domain errors (`<m>.errors.ts`)
+
+```ts
+import { DomainError } from "../../errors/domain";
+import { serviceUnavailable } from "../../errors/app-error";
+import type { AppError } from "../../errors/app-error";
+
+export class <M>ProvisioningError extends DomainError {
+  readonly kind = "<M>ProvisioningError" as const;
+  constructor(public readonly userId: string, cause: unknown) {
+    super(`Failed to provision <M> account for user ${userId}`);
+    this.cause = cause;
+  }
+}
+
+// Registered via AppModule.mapDomainError — no edits to error-handler.ts needed.
+export function map<M>DomainError(err: DomainError): AppError | undefined {
+  if (err instanceof <M>ProvisioningError) return serviceUnavailable(err.message);
+  return undefined;
+}
+```
+
+#### 4. The factory (`index.ts`)
+
+```ts
+import type { AppModule } from "..";
+import { registerUserCreateHook } from "../auth/post-signup-hooks";
+import { load<M>Config } from "./<m>.config";
+import { create<M>Client } from "./<m>.client";
+import { map<M>DomainError } from "./<m>.errors";
+// import { create<M>ProxyRouter } from "./<m>.proxy";  // if you have a proxy
+// import { create<M>Provisioner, makeBetterAuthUserCreateHook } from "./<m>.provision"; // if provisioning
+
+export function create<M>Module(): AppModule | null {
+  const config = load<M>Config();
+  if (!config) return null;   // disabled — registry skips it, no log spam
+
+  const client = create<M>Client(config);
+
+  // Only needed if users need linked accounts in the external system:
+  // const provisioner = create<M>Provisioner(client);
+  // registerUserCreateHook(makeBetterAuthUserCreateHook(provisioner));
+
+  // Only needed if you have a proxy router:
+  // const router = create<M>ProxyRouter({ config, client });
+
+  return {
+    mountPath: "/api/<m>",
+    router,                        // or a minimal router if no proxy
+    mapDomainError: map<M>DomainError,
+  };
+}
+```
+
+#### 5. Register in `src/modules/index.ts`
+
+Add exactly **two lines** to the optional modules block at the bottom:
+
+```ts
+import { create<M>Module } from "./<m>";   // line 1
+
+const <m> = create<M>Module();
+if (<m>) optionalModules.push(<m>);        // line 2
+```
+
+That's the entire core-file footprint. Nothing else changes.
+
+#### 6. Add env vars to `.env` / `.env.example`
+
+Document them with a comment block similar to the existing `SHOP_ENABLED` section.
+
+#### 7. If you need a linked account per user (provisioning)
+
+Implement the **3-layer fallback chain** in `<m>.provision.ts`:
+
+1. **Mapping table fast path** — your own DB table (`user_<m>_profile` or similar). `O(1)`, no upstream call.
+2. **Find-by-email/ID recovery** — if mapping is absent, query the upstream. The record may exist from a half-completed prior attempt, a backup/restore, or an admin action. Link to it rather than creating a duplicate. Failure here is non-fatal — fall through to Layer 3.
+3. **Create + collision recovery** — POST to the upstream to create the account. On a collision error (another request raced you), retry the find. Only throw `<M>ProvisioningError` when both the create AND the recovery find fail — that's a genuine "upstream is hard-down" signal.
+
+Add an **in-process inflight dedup map** (`Map<userId, Promise<string>>`) to coalesce concurrent calls for the same user within one process. Clear the entry in `.finally()` so a subsequent retry after failure can try again fresh.
+
+Register the signup hook as **fire-and-forget** (don't await; swallow the error after logging) so an upstream outage never blocks user registration.
+
+#### 8. If you need a proxy router
+
+- Use `Router.all("/<prefix>/*splat")` as the catch-all.
+- Call `ensureCustomerForUser` (or equivalent) at the top of every authenticated request as the lazy-retry safety net.
+- Strip hop-by-hop headers from both the incoming request and the upstream response.
+- Inject required upstream headers server-side (`Authorization`, API keys, etc.).
+- Buffer the upstream response body **once** (`await upstream.text()`), then decide whether to intercept or forward — never read `.text()` twice on the same `Response`.
+- Rewrite upstream error envelopes into our standard `ErrorResponse` shape.
+
+#### Detachment recipe (how to remove the integration)
+
+1. `rm -rf src/modules/<m>`
+2. Remove the import + two lines in `src/modules/index.ts`
+3. Drop any Prisma models added for the integration from `schema.prisma`
+4. `pnpm prisma migrate dev --name drop_<m>_integration`
+5. Remove any infrastructure the integration added (containers, volumes, etc.)
+
+Zero edits to core files (`env.ts`, `error-handler.ts`, `app.ts`, `auth.ts`).
+
+---
 
 ### Add a new feature module
 
@@ -447,3 +633,11 @@ The Dockerfile does both in a multi-stage build. The runtime image is
 - [ ] If you touched error handling, the error response still satisfies
       `ErrorResponse` (the `satisfies` clauses will tell you)
 - [ ] Comments explain _why_, not _what_
+
+If you added an **integration module**:
+
+- [ ] Only `src/modules/index.ts` was changed among core files (import + conditional push)
+- [ ] Env vars live in `<m>.config.ts`, not in `src/config/env.ts`
+- [ ] Domain errors use the `AppModule.mapDomainError` hook, not a branch in `error-handler.ts`
+- [ ] Post-signup hooks are registered via `registerUserCreateHook()`, not imported in `auth.ts`
+- [ ] The integration can be fully removed by deleting its folder + 2 lines in `index.ts`

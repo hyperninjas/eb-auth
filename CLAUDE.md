@@ -41,6 +41,9 @@ src/
 ├── middleware/            ← request-scoped, one concern per file
 ├── modules/<feature>/     ← feature modules; routes, controller, service, repo, schema, dto, openapi
 ├── modules/index.ts       ← THE module registry — every module mounts via this array
+├── modules/auth/
+│   └── post-signup-hooks.ts  ← push-based hook registry (integration modules push here)
+├── modules/shop/          ← CANONICAL reference for integration modules (see below)
 ├── http/app.ts            ← createApp() (no listen — testable)
 ├── http/server.ts         ← bootstrap + graceful shutdown
 ├── http/openapi.ts        ← merges per-module paths
@@ -50,8 +53,111 @@ src/
 └── generated/             ← .gitignored — Prisma client + auto-generated zod schemas
 ```
 
-Use `src/modules/devices/` as the canonical reference when working on
-any module — its file layout is the convention.
+Use `src/modules/devices/` as the canonical reference for **feature modules**.
+Use `src/modules/shop/` as the canonical reference for **integration modules** (external APIs / third-party services).
+
+---
+
+## Integration modules — adding external services
+
+This section documents the pattern established by the Medusa/shop integration. Follow it exactly when adding the next external service (payment provider, email/SMS, search, analytics, etc.).
+
+### The core contract
+
+An integration module is **completely self-contained** — adding it touches exactly two lines in `src/modules/index.ts` and zero other core files. Removing it is the mirror operation.
+
+The two lines in `src/modules/index.ts`:
+
+```ts
+import { createShopModule } from "./shop"; // 1 — import
+const shop = createShopModule();
+if (shop) optionalModules.push(shop); // 2 — conditional push
+```
+
+That's it. No edits to `env.ts`, `error-handler.ts`, `app.ts`, or `auth.ts`.
+
+### File layout for an integration module
+
+```
+src/modules/<integration>/
+├── index.ts               ← ONLY public export: create<Integration>Module()
+├── <m>.config.ts          ← module-local Zod env schema + loadConfig()
+├── <m>.client.ts          ← HTTP client for the external service
+├── <m>.errors.ts          ← DomainError subclasses + map<M>DomainError()
+├── <m>.provision.ts       ← (if needed) account provisioning logic
+├── <m>.proxy.ts           ← (if needed) HTTP proxy router
+└── <m>.repository.ts      ← (if needed) Prisma calls for the module's own tables
+```
+
+`create<Integration>Module()` returns `AppModule | null`. Returning `null` when the integration is disabled is what allows the registry to skip the module without a conditional in any other file.
+
+### Module-local env validation
+
+Do NOT add integration env vars to `src/config/env.ts`. Put them in `<m>.config.ts`:
+
+```ts
+// blankAsUndefined makes z.preprocess handle empty-string env vars correctly —
+// `.env` files often have `MEDUSA_ADMIN_TOKEN=` with no value, which is an
+// empty string in process.env (not undefined), so .min(1).optional() would
+// reject it. Preprocessing to undefined makes optional/required work as intended.
+const blankAsUndefined = (v: unknown): unknown =>
+  typeof v === "string" && v.trim() === "" ? undefined : v;
+
+// Pattern: SHOP_ENABLED acts as master switch; when false, loadConfig() returns
+// null and create<M>Module() returns null immediately (zero env vars required).
+// When true, collect ALL missing required vars and throw a single complete error.
+```
+
+### The push-based post-signup hook
+
+Integration modules that need to run logic after a user signs up use the push-based registry in `src/modules/auth/post-signup-hooks.ts`. They call `registerUserCreateHook(fn)` inside their `create<M>Module()` at activation time.
+
+**Why push-based, not direct import from `auth.ts`**: The shop proxy imports `auth-guard.ts`, which imports `auth.ts`. If `auth.ts` imported `shop/`, that would be a circular dependency. The registry inverts the direction — `auth.ts` imports only the registry file, integration modules push into it. `auth.ts` has zero compile-time knowledge of any integration.
+
+### The domain error hook
+
+Each integration module ships its own `mapDomainError` function and registers it via the `AppModule.mapDomainError` field. The central error handler in `error-handler.ts` walks all modules' hooks before falling back to its own core mappings. Removing the module folder removes its error mapper automatically — no orphan branches in the central handler.
+
+### The proxy pattern (for REST API integrations)
+
+When an integration wraps an upstream REST API (like Medusa), prefer a **reverse proxy** over typed endpoints:
+
+- Proxy all store/API routes through a catch-all (`Router.all("/<prefix>/*splat")`).
+- Inject required auth headers (`x-publishable-api-key`, `Authorization`) server-side.
+- Only intercept specific operations that need server-side logic (e.g. attaching a customer to a cart on creation).
+- Rewrite upstream error envelopes into our standard `ErrorResponse` shape.
+- Browsers NEVER talk to the upstream service directly.
+
+This means zero new code is needed when the upstream adds new endpoints — the proxy forwards anything that comes through.
+
+### The 3-layer provisioning pattern
+
+When an integration needs a "linked account" in the external system (e.g. a Medusa customer for each eb-auth user), use this fallback chain:
+
+1. **Mapping table fast path** — check our own DB first (`O(1)` Postgres lookup, no upstream call).
+2. **Find-by-ID/email recovery** — if our mapping is missing, ask the upstream. The record may exist from a previous (half-completed) provision attempt, a backup/restore scenario, or an out-of-band admin action. Link to it instead of creating a duplicate.
+3. **Create + collision recovery** — if not found, create. On collision (another pod/request raced us), retry the find. Only throw `<M>ProvisioningError` if both the create AND the recovery find fail simultaneously — that's the real "upstream is down" signal, not a race condition.
+
+Add an **in-process inflight dedup map** (`Map<userId, Promise<string>>`) to coalesce concurrent provisioning calls for the same user within a single process. Cross-replica races are handled by Layer 2.
+
+**Signup hook = fire-and-forget**. The `makeBetterAuthUserCreateHook` wrapper fires provisioning in the background so a slow/down external service never blocks signup. The lazy retry on the next API call is the safety net.
+
+### Detachment recipe (removing an integration)
+
+For the shop integration specifically:
+
+1. `rm -rf src/modules/shop`
+2. Remove the 3 lines in `src/modules/index.ts` (import + `createShopModule()` call + push)
+3. Drop the `UserCommerceProfile` model + the `commerceProfile` relation on `User` in `prisma/schema.prisma`
+4. `pnpm prisma migrate dev --name drop_shop_integration`
+5. `docker compose stop medusa && docker compose rm -f medusa` (stop the Medusa container)
+6. Remove the `medusa:` service block from `docker-compose.yml`
+7. Optionally: `docker compose exec postgres dropdb -U eb_auth medusa`
+8. Optionally: `rm -rf commerce/`
+
+For future integrations: steps 1–4 are universal. Steps 5+ depend on what infrastructure the integration added.
+
+**Zero edits required to**: `env.ts`, `error-handler.ts`, `app.ts`, `auth.ts`, or any other core file.
 
 ## Hard rules — read these before editing
 
@@ -166,21 +272,25 @@ and `return Promise.resolve()` explicitly.
 
 ## Don't do this (anti-patterns I've seen tempted)
 
-| ❌ Don't                                      | ✅ Do                                                 |
-| --------------------------------------------- | ----------------------------------------------------- |
-| Suggest replacing Vitest with Jest            | Vitest is correct here; ESM rules out Jest            |
-| Suggest adding Vite to runtime                | Vite stays in `vitest` only                           |
-| Add a new `z.object({})` for a DB shape       | Derive from `DeviceModelSchema`                       |
-| Add a new error code inline as a string       | Add to `ERROR_CODES`, use a factory                   |
-| Edit anything in `src/generated/`             | It's auto-generated; edit the source instead          |
-| Use `any`                                     | Define a narrow local interface and cast through that |
-| Add `.js` to an import                        | Bundler resolution — no extensions                    |
-| `res.status(...).json({...})` for an error    | `next(appErrorFactory(...))`                          |
-| `throw new AppError(...)` from a service      | `throw new SomeDomainError(...)`                      |
-| `try/catch` an error just to wrap and rethrow | Let it bubble — the central handler maps it           |
-| Mount a module-local `errorHandler`           | The global one in `app.ts` is enough                  |
-| `process.env.FOO` direct read                 | `env.FOO` from `config/env.ts`                        |
-| Block the event loop with sync work           | Pino is async-transport in prod for a reason          |
+| ❌ Don't                                            | ✅ Do                                                      |
+| --------------------------------------------------- | ---------------------------------------------------------- |
+| Suggest replacing Vitest with Jest                  | Vitest is correct here; ESM rules out Jest                 |
+| Suggest adding Vite to runtime                      | Vite stays in `vitest` only                                |
+| Add a new `z.object({})` for a DB shape             | Derive from `DeviceModelSchema`                            |
+| Add a new error code inline as a string             | Add to `ERROR_CODES`, use a factory                        |
+| Edit anything in `src/generated/`                   | It's auto-generated; edit the source instead               |
+| Use `any`                                           | Define a narrow local interface and cast through that      |
+| Add `.js` to an import                              | Bundler resolution — no extensions                         |
+| `res.status(...).json({...})` for an error          | `next(appErrorFactory(...))`                               |
+| `throw new AppError(...)` from a service            | `throw new SomeDomainError(...)`                           |
+| `try/catch` an error just to wrap and rethrow       | Let it bubble — the central handler maps it                |
+| Mount a module-local `errorHandler`                 | The global one in `app.ts` is enough                       |
+| `process.env.FOO` direct read                       | `env.FOO` from `config/env.ts`                             |
+| Block the event loop with sync work                 | Pino is async-transport in prod for a reason               |
+| Add integration env vars to `config/env.ts`         | Put them in `<m>.config.ts` (module-local validation)      |
+| `import { shopService } from "./shop"` in `auth.ts` | Use the push-based hook registry in `post-signup-hooks.ts` |
+| Write a new typed endpoint per upstream route       | Proxy the upstream; only intercept what needs it           |
+| Edit `error-handler.ts` when adding an integration  | Register `mapDomainError` on the `AppModule` instead       |
 
 ## Things you might be tempted to "fix" but shouldn't
 
@@ -247,8 +357,7 @@ The user has shown clear preferences:
 
 ## When in doubt
 
-1. Check if there's an existing pattern in `src/modules/devices/` —
-   that module is the reference implementation.
-2. Check `CONTRIBUTING.md` for the relevant how-to recipe.
-3. If still unsure, ask before making invasive changes. The user
-   prefers a 30-second clarifying question over a 30-minute revert.
+1. Building a **feature module** (owns its own DB table, has CRUD)? Check `src/modules/devices/` — that's the reference implementation.
+2. Building an **integration module** (wraps an external API/service)? Check `src/modules/shop/` — that's the reference implementation.
+3. Check `CONTRIBUTING.md` for the relevant how-to recipe.
+4. If still unsure, ask before making invasive changes. The user prefers a 30-second clarifying question over a 30-minute revert.
