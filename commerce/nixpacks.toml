@@ -24,7 +24,18 @@ cmds = ["npm install --no-fund --no-audit --loglevel=warn"]
 # default ~1 GB V8 heap limit. 2 GB gives enough headroom without flooding
 # swap on a 2 GB RAM server. This only affects the build container, not the
 # running server.
-cmds = ["NODE_OPTIONS=--max-old-space-size=2048 npm run build"]
+#
+# After building we copy .medusa/server out of /app to /medusa-server.
+# Nixpacks appends a final `COPY . /app` step to its generated Dockerfile;
+# Docker's overlay filesystem marks /app as an opaque directory in that layer,
+# which hides everything written to /app in earlier layers — including the
+# .medusa/server build output. Copying to /medusa-server (outside /app) puts
+# it in a path the final COPY cannot touch, so the artifact survives into the
+# running container.
+cmds = [
+  "NODE_OPTIONS=--max-old-space-size=2048 npm run build",
+  "cp -r .medusa/server /medusa-server"
+]
 
 [start]
 # All startup logic (build fallback, db init, migrations, admin user, server

@@ -3,11 +3,16 @@
 # All steps are idempotent; re-running on restart is safe.
 set -e
 
-# ── 1. Admin build ────────────────────────────────────────────────────────────
-# Nixpacks preserves .medusa/ when its build phase succeeds (fast path).
-# If the file is missing (build phase failed or was skipped), build now.
-if [ ! -f .medusa/server/public/index.html ]; then
-  echo "Admin bundle missing — running medusa build..."
+# ── 1. Restore admin build ────────────────────────────────────────────────────
+# nixpacks.toml copies .medusa/server to /medusa-server during the build phase
+# (outside /app so it survives Nixpacks' final COPY . /app layer). Restore it
+# here before starting the server.
+if [ -d /medusa-server ]; then
+  echo "Restoring admin build from /medusa-server..."
+  mkdir -p .medusa
+  cp -r /medusa-server .medusa/server
+else
+  echo "WARNING: /medusa-server not found — falling back to full medusa build (slow)..."
   NODE_OPTIONS=--max-old-space-size=2048 npm run build
 fi
 
@@ -34,10 +39,5 @@ else
     || echo "Admin user already exists, skipping."
 fi
 
-# ── 5. Diagnose admin build location ─────────────────────────────────────────
-echo "=== .medusa tree ==="
-find .medusa -name "index.html" 2>/dev/null || echo "(no index.html found anywhere in .medusa)"
-echo "=== end tree ==="
-
-# ── 6. Start server ───────────────────────────────────────────────────────────
+# ── 5. Start server ───────────────────────────────────────────────────────────
 exec npm start
