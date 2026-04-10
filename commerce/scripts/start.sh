@@ -3,35 +3,33 @@
 # All steps are idempotent; re-running on restart is safe.
 set -e
 
-# ── 1. Restore admin build ────────────────────────────────────────────────────
-# nixpacks.toml copies .medusa/server to /medusa-server during the build phase
-# (outside /app so it survives Nixpacks' final COPY . /app layer). Restore it
-# here before starting the server.
-if [ -d /medusa-server ]; then
-  echo "Restoring admin build from /medusa-server..."
-  mkdir -p .medusa
-  cp -r /medusa-server .medusa/server
-else
-  echo "WARNING: /medusa-server not found — falling back to full medusa build (slow)..."
-  NODE_OPTIONS=--max-old-space-size=2048 npm run build
-fi
+# ── 1. Restore build artifact ─────────────────────────────────────────────────
+# /medusa-server was populated during the Nixpacks build phase (cp -r
+# .medusa/server /medusa-server). It lives outside /app so it survives the
+# opaque-dir COPY layer that Nixpacks appends. Restore it to the path that
+# `medusa start` expects: .medusa/server relative to the project root.
+echo "Restoring .medusa/server from build artifact..."
+mkdir -p .medusa
+cp -r /medusa-server .medusa/server
+
+# Use the medusa CLI shipped inside the production artifact — no devDeps
+# from /app/node_modules needed at runtime.
+export PATH="/medusa-server/node_modules/.bin:$PATH"
 
 # ── 2. Ensure database exists ─────────────────────────────────────────────────
 sh scripts/ensure-db.sh
 
 # ── 3. Run migrations ─────────────────────────────────────────────────────────
-npm run db:migrate
+medusa db:migrate
 
 # ── 4. Ensure admin user exists ───────────────────────────────────────────────
 # MEDUSA_ADMIN_EMAIL and MEDUSA_ADMIN_PASSWORD must be set as secrets in
-# Dokploy. If the user already exists, `medusa user` exits non-zero — we
-# swallow that so the container doesn't crash on every restart after the
-# first successful boot.
+# Dokploy. Gracefully skips if the user already exists.
 if [ -z "$MEDUSA_ADMIN_EMAIL" ] || [ -z "$MEDUSA_ADMIN_PASSWORD" ]; then
-  echo "WARNING: MEDUSA_ADMIN_EMAIL or MEDUSA_ADMIN_PASSWORD is not set — skipping admin creation."
+  echo "WARNING: MEDUSA_ADMIN_EMAIL or MEDUSA_ADMIN_PASSWORD not set — skipping admin creation."
 else
   echo "Ensuring admin user ${MEDUSA_ADMIN_EMAIL} exists..."
-  npx medusa user \
+  medusa user \
     --email "$MEDUSA_ADMIN_EMAIL" \
     --password "$MEDUSA_ADMIN_PASSWORD" \
     2>/dev/null \
@@ -40,4 +38,4 @@ else
 fi
 
 # ── 5. Start server ───────────────────────────────────────────────────────────
-exec npm start
+exec medusa start

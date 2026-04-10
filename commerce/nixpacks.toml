@@ -1,53 +1,48 @@
-# Nixpacks build configuration — used by Dokploy (and any other Nixpacks-based
-# platform) for the Medusa v2 commerce backend.
+# Nixpacks build configuration for the Medusa v2 commerce backend.
 #
-# This is the production-grade pipeline the Dockerfile comment called out:
-#   `medusa build` → .medusa/server  →  `medusa start`
-# The local Dockerfile uses `medusa develop` (no compile step) for fast
-# iteration; here we compile properly and run from the compiled output.
+# Build output: `medusa build` compiles everything into .medusa/server/ which
+# is a self-contained production artifact with its own package.json listing
+# only runtime deps. We install prod-only deps there during the build phase
+# and copy it to /medusa-server (outside /app) so it survives Nixpacks'
+# final COPY . /app layer (Docker opaque-dir whiteout erases /app contents
+# from earlier layers). At runtime we restore it with a fast cp and run the
+# medusa CLI directly from /medusa-server/node_modules/.bin — devDeps are
+# never needed at runtime.
+#
+# Node module caching: Nixpacks mounts /root/.npm as a BuildKit cache so npm
+# package downloads are reused across builds. We additionally cache
+# /app/node_modules so the full install (1312 packages, ~5 min) is skipped
+# when package.json hasn't changed.
 
 [phases.setup]
-# Pin Node 24 to match the dev Dockerfile. Medusa only requires >=20 but
-# staying on 24 keeps parity with the eb-auth service and avoids surprises.
-# python3 / gnumake / gcc are required for native addons (sharp, argon2, etc.)
-# that Medusa's transitive deps may compile from source.
-# postgresql gives us psql in the start command to create the database if it
-# doesn't exist — `medusa db:migrate` expects the database to already exist
-# and will crash on first boot if it isn't there.
 nixPkgs = ["nodejs_24", "python3", "gnumake", "gcc", "postgresql"]
 
 [phases.install]
 cmds = ["npm install --no-fund --no-audit --loglevel=warn"]
+# Cache the installed node_modules between builds — invalidated automatically
+# when the Docker layer for `COPY . /app` changes (i.e. when package.json or
+# package-lock.json changes). Cuts the install step from ~5 min to seconds
+# on cache hit.
+cacheDirectories = ["/root/.npm", "/app/node_modules"]
 
 [phases.build]
-# Medusa's admin dashboard build (Vite) OOM-crashed at ~975 MB against the
-# default ~1 GB V8 heap limit. 2 GB gives enough headroom without flooding
-# swap on a 2 GB RAM server. This only affects the build container, not the
-# running server.
-#
-# After building we copy .medusa/server out of /app to /medusa-server.
-# Nixpacks appends a final `COPY . /app` step to its generated Dockerfile;
-# Docker's overlay filesystem marks /app as an opaque directory in that layer,
-# which hides everything written to /app in earlier layers — including the
-# .medusa/server build output. Copying to /medusa-server (outside /app) puts
-# it in a path the final COPY cannot touch, so the artifact survives into the
-# running container.
+# 1. Compile backend + bundle admin dashboard (Vite needs 2 GB heap).
+# 2. Install ONLY production deps inside .medusa/server — this trims the
+#    runtime from 1312 packages (devDeps included) down to only what the
+#    server actually needs.
+# 3. Copy to /medusa-server (outside /app) to survive the Nixpacks opaque-dir
+#    layer problem described above.
 cmds = [
   "NODE_OPTIONS=--max-old-space-size=2048 npm run build",
+  "cd .medusa/server && npm install --omit=dev --no-fund --no-audit --loglevel=warn",
   "cp -r .medusa/server /medusa-server"
 ]
 
 [start]
-# All startup logic (build fallback, db init, migrations, admin user, server
-# start) lives in scripts/start.sh for readability and testability.
 cmd = "sh scripts/start.sh"
 
 [variables]
 NODE_ENV = "production"
-# Bind to all interfaces so the load balancer / reverse proxy can reach the
-# container. Matches the HOST=0.0.0.0 set in the dev Dockerfile.
 HOST     = "0.0.0.0"
 PORT     = "9000"
-# Pin the clock to UTC — every Medusa timestamp (orders, sessions, audit logs)
-# lands in the shared Postgres in UTC and stays comparable with eb-auth rows.
 TZ       = "UTC"
