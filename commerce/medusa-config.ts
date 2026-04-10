@@ -40,10 +40,6 @@ module.exports = defineConfig({
     // database instead.
     databaseDriverOptions: process.env.NODE_ENV !== "production" ? { ssl: false } : undefined,
     redisUrl: process.env.REDIS_URL,
-    server: {
-      host: "0.0.0.0",
-      port: 9000,
-    },
     http: {
       // The proxy is server-to-server, so the eb-auth API origin is
       // the only storefront caller. Admin and auth CORS allow the
