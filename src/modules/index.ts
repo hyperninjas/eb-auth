@@ -13,6 +13,8 @@ import { healthRouter } from "./health";
 // No core file (env.ts, error-handler.ts, app.ts) needs to be touched.
 import { createShopModule } from "./shop";
 import { createEpcModule } from "./epc";
+import { createSolarModule } from "./solar";
+import { createWeatherModule } from "./weather";
 
 /**
  * Module registry — single source of truth for which feature modules are
@@ -102,5 +104,11 @@ if (shop) optionalModules.push(shop);
 
 const epc = createEpcModule();
 if (epc) optionalModules.push(epc);
+
+const solar = createSolarModule();
+if (solar) optionalModules.push(solar);
+
+const weather = createWeatherModule();
+if (weather) optionalModules.push(weather);
 
 modules.push(...optionalModules);

@@ -36,8 +36,8 @@ const EpcEnvSchema = z.object({
   EPC_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
 
   // Redis cache TTL for search results and certificates. EPC data
-  // changes rarely (certificates valid 10 years), so 24h is safe.
-  EPC_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(86_400),
+  // changes rarely (certificates valid 10 years), so 30 days is safe.
+  EPC_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(2_592_000),
 });
 
 export interface EpcConfig {
