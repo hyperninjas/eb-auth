@@ -77,6 +77,11 @@ model User {
   // model below in the same migration. Nothing in core depends on it.
   commerceProfile UserCommerceProfile?
 
+  // Owned by the OPTIONAL energy-profile module. If you remove
+  // src/modules/energy-profile/, drop this relation and the
+  // PropertyProfile model in the same migration.
+  propertyProfile PropertyProfile?
+
   @@index([houseId])
   @@index([isOnboardingDone])
   @@map("user")
@@ -234,6 +239,168 @@ model UserCommerceProfile {
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("user_commerce_profile")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Optional module — energy-profile
+//
+// Owned by the detachable `src/modules/energy-profile/` module. Stores
+// per-user EPC data, hardware extrapolation results, tariff information,
+// and user energy consumption profiles for the "Best Guess" onboarding
+// engine.
+//
+// To remove the energy-profile module entirely:
+//   1. Delete src/modules/energy-profile/
+//   2. Remove the `propertyProfile` relation from the User model above
+//   3. Delete these 6 models
+//   4. `pnpm prisma migrate dev --name drop_energy_profile`
+// ─────────────────────────────────────────────────────────────────────────────
+
+model PropertyProfile {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String   @unique @map("user_id")
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Core EPC identifiers — persisted so we don't re-fetch on every request
+  uprn           String?  @db.VarChar(20)
+  lmkKey         String   @map("lmk_key") @db.VarChar(100)
+  address        String   @db.VarChar(500)
+  postcode       String   @db.VarChar(10)
+  propertyType   String   @map("property_type") @db.VarChar(50)
+  builtForm      String   @map("built_form") @db.VarChar(50)
+  totalFloorArea Float    @map("total_floor_area")
+
+  // Full latest EPC certificate snapshot (60+ fields as JSON)
+  latestEpcData  Json     @map("latest_epc_data")
+
+  // Derived hardware extrapolation result (recalculated on refresh)
+  hardware       Json?
+
+  // Whether the user has confirmed/corrected the best-guess results
+  userVerified   Boolean  @default(false) @map("user_verified")
+
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  history        PropertyEpcHistory[]
+  loadProfile    UserLoadProfile?
+
+  @@index([postcode])
+  @@index([uprn])
+  @@map("property_profile")
+}
+
+model PropertyEpcHistory {
+  id                       String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profileId                String          @map("profile_id") @db.Uuid
+  profile                  PropertyProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  lmkKey                   String          @map("lmk_key") @db.VarChar(100)
+  inspectionDate           DateTime        @map("inspection_date") @db.Date
+  lodgementDate            DateTime        @map("lodgement_date") @db.Date
+
+  // Key fields for the UPRN "Time Machine" analysis
+  mainheatDescription      String?         @map("mainheat_description")
+  photoSupply              String?         @map("photo_supply") @db.VarChar(20)
+  spaceHeatingDemand       Float?          @map("space_heating_demand")
+  energyConsumptionCurrent Float?          @map("energy_consumption_current")
+
+  // Full certificate snapshot
+  certificateData          Json            @map("certificate_data")
+
+  @@unique([profileId, lmkKey])
+  @@index([profileId, inspectionDate(sort: Asc)])
+  @@map("property_epc_history")
+}
+
+model EnergyProvider {
+  id       String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name     String  @unique @db.VarChar(100)
+  slug     String  @unique @db.VarChar(100)
+  isActive Boolean @default(true) @map("is_active")
+
+  tariffs      EnergyTariff[]
+  loadProfiles UserLoadProfile[]
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("energy_provider")
+}
+
+model EnergyTariff {
+  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  providerId String         @map("provider_id") @db.Uuid
+  provider   EnergyProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  name       String         @db.VarChar(200)
+  // "flat" = standard variable / fixed, "tou" = time-of-use, "export" = SEG export
+  tariffType String         @map("tariff_type") @db.VarChar(20)
+
+  // Rates stored as integer pence (× 100) to avoid float rounding.
+  // e.g. 24.50p/kWh → 2450. Divide by 100 in the application layer.
+  flatRatePence       Int? @map("flat_rate_pence")
+  peakRatePence       Int? @map("peak_rate_pence")
+  offPeakRatePence    Int? @map("off_peak_rate_pence")
+  peakStartHour       Int? @map("peak_start_hour")
+  peakEndHour         Int? @map("peak_end_hour")
+  standingChargePence Int  @map("standing_charge_pence")
+  segExportRatePence  Int? @map("seg_export_rate_pence")
+
+  isDefault Boolean   @default(false) @map("is_default")
+  validFrom DateTime  @map("valid_from") @db.Date
+  validTo   DateTime? @map("valid_to") @db.Date
+  // "octopus_api" | "ofgem_svt" | "manual"
+  source    String    @db.VarChar(50)
+
+  loadProfiles UserLoadProfile[]
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@unique([providerId, name, validFrom])
+  @@index([providerId])
+  @@index([tariffType])
+  @@map("energy_tariff")
+}
+
+model UserLoadProfile {
+  id         String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profileId  String          @unique @map("profile_id") @db.Uuid
+  profile    PropertyProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  providerId String         @map("provider_id") @db.Uuid
+  tariffId   String         @map("tariff_id") @db.Uuid
+  provider   EnergyProvider @relation(fields: [providerId], references: [id])
+  tariff     EnergyTariff   @relation(fields: [tariffId], references: [id])
+
+  // Stored as pence to avoid float rounding
+  monthlyBillPence Int   @map("monthly_bill_pence")
+  dailyKwh         Float @map("daily_kwh")
+
+  // 24-element array: hourly kWh distribution (standard UK residential curve)
+  hourlyDistribution Json @map("hourly_distribution")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@map("user_load_profile")
+}
+
+model PvgisIrradiance {
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  latitude  Float
+  longitude Float
+
+  // 12-element array: monthly average daily global irradiation (kWh/m2/day)
+  monthlyIrradiance    Json  @map("monthly_irradiance")
+  optimalAngle         Float? @map("optimal_angle")
+  annualYieldKwhPerKwp Float @map("annual_yield_kwh_per_kwp")
+
+  fetchedAt DateTime @default(now()) @map("fetched_at") @db.Timestamptz()
+
+  @@unique([latitude, longitude])
+  @@map("pvgis_irradiance")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ import { createShopModule } from "./shop";
 import { createEpcModule } from "./epc";
 import { createSolarModule } from "./solar";
 import { createWeatherModule } from "./weather";
+import { createEnergyProfileModule } from "./energy-profile";
 
 /**
  * Module registry — single source of truth for which feature modules are
@@ -110,5 +111,12 @@ if (solar) optionalModules.push(solar);
 
 const weather = createWeatherModule();
 if (weather) optionalModules.push(weather);
+
+// energy-profile hard-depends on EPC (needs the client for cert lookups
+// and UPRN history). If EPC is disabled, energy-profile cannot function.
+const energyProfile = epc
+  ? createEnergyProfileModule({ epcClient: epc.client, epcCache: epc.cache })
+  : null;
+if (energyProfile) optionalModules.push(energyProfile);
 
 modules.push(...optionalModules);

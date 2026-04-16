@@ -96,6 +96,19 @@ export interface EpcClient {
 
   /** Fetch a single certificate by LMK key. Returns null if not found. */
   getCertificate: (lmkKey: string) => Promise<EpcCertificate | null>;
+
+  /**
+   * Fetch ALL domestic certificates matching a UPRN.
+   *
+   * Returns every historical certificate for a property, which may span
+   * multiple inspections over many years. Used by the energy-profile
+   * module's UPRN "Time Machine" to find when hardware (solar, heat pump)
+   * first appeared.
+   *
+   * Uses the recommended `search-after` cursor pagination instead of the
+   * deprecated `from`/`size` method (capped at 10 000 since Dec 2023).
+   */
+  searchByUprn: (uprn: string) => Promise<EpcSearchResult>;
 }
 
 export function createEpcClient(config: EpcConfig): EpcClient {
@@ -119,6 +132,38 @@ export function createEpcClient(config: EpcConfig): EpcClient {
 
       const rows = (data.rows ?? []).map(normaliseRow);
       return { rows, totalResults: rows.length };
+    },
+
+    searchByUprn: async (uprn) => {
+      // Fetch all certificates for this UPRN. The EPC API supports
+      // `search-after` cursor-based pagination which has no upper bound
+      // (unlike the deprecated `from`/`size` that caps at 10 000).
+      const allRows: EpcCertificate[] = [];
+      let searchAfter: string | undefined;
+
+      for (;;) {
+        const params = new URLSearchParams({ uprn, size: "100" });
+        if (searchAfter) params.set("search-after", searchAfter);
+
+        const data = await epcFetch<{
+          rows: EpcRawRow[];
+          "column-names": string[];
+          "search-after"?: string;
+        }>(config, `/domestic/search?${params.toString()}`, authHeader);
+
+        if (!data?.rows || data.rows.length === 0) break;
+
+        const normalised = data.rows.map(normaliseRow);
+        allRows.push(...normalised);
+
+        // If the API returns a cursor, use it for the next page. If not,
+        // we've reached the end.
+        const cursor = data["search-after"];
+        if (!cursor || data.rows.length < 100) break;
+        searchAfter = cursor;
+      }
+
+      return { rows: allRows, totalResults: allRows.length };
     },
 
     getCertificate: async (lmkKey) => {
