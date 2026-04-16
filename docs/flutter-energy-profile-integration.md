@@ -6,6 +6,87 @@ All endpoints require authentication via the `better-auth.session_token` cookie 
 
 ---
 
+## Changelog (latest first)
+
+### v2 — Solar Simulation + Dashboard Endpoint
+
+**What changed — the Flutter dev must update these:**
+
+1. **`GET /forecast/solar` now accepts query params** for "what if" simulation:
+   - `?panelCount=8` — simulate with N panels (uses 430W Modern N-Type wattage)
+   - `?capacityKwp=3.5` — simulate with exact system capacity
+   - No params = uses profile's auto-detected or user-corrected capacity (same as before)
+   - **Flutter change:** Add optional `panelCount`/`capacityKwp` params to the solar forecast API call. Build a slider UI for users to explore different system sizes.
+
+2. **`GET /dashboard` added** — single endpoint returns status + profile + loadProfile + all forecasts:
+   - Replace 5 sequential API calls with 1 call
+   - **Flutter change:** Replace the dashboard init that calls `/status` + `/profile` + `/load-profile` + `/forecast/summary` with a single `GET /dashboard` call.
+
+3. **`UserLoadProfile` response now includes display names:**
+   - New fields: `providerName`, `tariffName`, `displayTariff` (e.g. "British Gas — Standard Variable Tariff")
+   - **Flutter change:** Use `displayTariff` directly instead of joining provider + tariff names from separate calls. Update the Dart `UserLoadProfile` model to include the 3 new fields.
+
+4. **`PropertyProfile` response cleaned up:**
+   - Removed: `userId`, `lmkKey`, `uprn` (backend internals)
+   - Added: `energyRating` (A-G from EPC), `historyCertCount`
+   - **Flutter change:** Remove `userId`/`lmkKey`/`uprn` from the Dart model. Add `energyRating` and `historyCertCount`.
+
+5. **`EpcHistory` response now includes `summary`:**
+   - New field: `summary` (e.g. "Heat: Boiler and radiators · 272 kWh/m²")
+   - **Flutter change:** Use `summary` for the timeline card subtitle instead of building it client-side.
+
+6. **`GET /tariffs` now paginated with filters:**
+   - Query params: `?providerId=X&type=flat&page=1&limit=20`
+   - Response shape changed from `EnergyTariffDTO[]` to `{ data: [...], pagination: { page, limit, total, totalPages } }`
+   - **Flutter change:** Update the tariff list API call to handle the paginated envelope. Add provider/type filter dropdowns.
+
+7. **`EnergyProvider` response now includes `tariffCount`:**
+   - **Flutter change:** Show the count badge next to each provider name in the picker.
+
+8. **Forecast `summary` now includes `errors` object:**
+   - Each forecast that returns `null` has a reason string in `errors.solar`, `errors.costImpact`, etc.
+   - **Flutter change:** When a forecast is null, show `errors.{name}` message instead of a generic error.
+
+---
+
+### Dart Model Updates Required
+
+```dart
+// REMOVE these fields from PropertyProfile:
+// - userId (removed from API response)
+// - lmkKey (removed from API response)
+// - uprn (removed from API response)
+
+// ADD these fields to PropertyProfile:
+// + energyRating: String?   (e.g. "D")
+// + historyCertCount: int
+
+// ADD these fields to UserLoadProfile:
+// + providerName: String
+// + tariffName: String
+// + displayTariff: String   (e.g. "British Gas — Standard Variable Tariff")
+
+// ADD this field to EpcHistory:
+// + summary: String          (e.g. "Heat: Boiler and radiators · 272 kWh/m²")
+
+// ADD this new model:
+// class Dashboard {
+//   final OnboardingStatus status;
+//   final PropertyProfile? profile;
+//   final UserLoadProfile? loadProfile;
+//   final ForecastSummary? forecasts;
+// }
+
+// UPDATE tariff list response:
+// Was: List<EnergyTariff>
+// Now: { data: List<EnergyTariff>, pagination: Pagination }
+
+// ADD optional params to solar forecast call:
+// getSolarForecast({int? panelCount, double? capacityKwp})
+```
+
+---
+
 ## Table of Contents
 
 1. [Onboarding Flow (State Machine)](#1-onboarding-flow)
@@ -318,10 +399,33 @@ Response `201`:
 
 **Always prefer `GET /forecast/summary`** — it runs all 4 in parallel and returns error reasons for any that fail.
 
+#### Solar "What If" Simulation
+
+The solar forecast supports query parameters for on-the-fly simulation. This lets users explore different system sizes **without modifying their profile**:
+
+```http
+# Simulate with a specific number of panels
+GET /forecast/solar?panelCount=12
+
+# Simulate with a specific system capacity
+GET /forecast/solar?capacityKwp=5.0
+
+# Use the profile's auto-detected or user-corrected capacity (default)
+GET /forecast/solar
+```
+
+This is especially useful for:
+
+- **Flats/maisonettes** (0 panels auto-detected) — user can still simulate
+- **Planning a new installation** — user can try different sizes before committing
+- **Comparison slider UI** — call with different `panelCount` values to show a range
+
+**Note:** Override results are NOT cached — they're computed fresh each time. Only the default (no query params) response is cached.
+
 **Possible errors per forecast:**
 | Error message | Cause | UI Action |
-|---------------|-------|-----------|
-| `"No solar capacity estimated..."` | Property type = flat, 0 panels | Show "Not suitable for rooftop solar" |
+| ------------------------------------------------------ | ------------------------------ | --------------------------------------------------- |
+| `"No solar capacity estimated..."` | Property type = flat, 0 panels, no override | Show "Not suitable for rooftop solar" + simulation slider |
 | `"Set your energy provider and monthly bill first."` | Load profile not created | Show "Complete Step 3 first" button |
 | `"Hardware extrapolation not available."` | Profile data incomplete | Show "Refresh your property profile" |
 
@@ -826,7 +930,7 @@ assert(dashboard.forecasts!.errors.costImpact ==
 // Show: solar card with data, other cards with "Set your bill" CTA
 ```
 
-### Example 5: Flat/Maisonette (no solar possible)
+### Example 5: Flat/Maisonette (no auto-detected solar — use simulation)
 
 ```dart
 final profile = await api.createProfile(flatLmkKey);
@@ -835,13 +939,30 @@ final profile = await api.createProfile(flatLmkKey);
 assert(profile.hardware!.solar.estimatedPanelCount == 0);
 assert(profile.hardware!.solar.manualSurveyRequired == true);
 
-// Solar forecast will fail
+// Default solar forecast will fail (0 capacity)
 final dashboard = await api.getDashboard();
 assert(dashboard.forecasts!.solar == null);
 assert(dashboard.forecasts!.errors.solar!.contains('No solar capacity'));
 
-// Show: "Solar panels are not typically suitable for flats.
-//         Contact a surveyor for a professional assessment."
+// BUT — user can still simulate with query params!
+// "What if I install 6 panels on my flat roof?"
+final simulated = await api.getSolarForecast(panelCount: 6);
+print('Simulated yield: ${simulated.annualYieldKwh} kWh/year');
+
+// Or let user pick from a slider:
+for (final panels in [4, 6, 8, 10]) {
+  final sim = await api.getSolarForecast(panelCount: panels);
+  print('$panels panels → ${sim.annualYieldKwh.round()} kWh/yr');
+}
+
+// Or if they know the exact system size:
+final customSim = await api.getSolarForecast(capacityKwp: 3.5);
+
+// To make this permanent, use PATCH /profile/hardware:
+await api.updateHardware({
+  solar: { detected: true, estimatedPanelCount: 6 },
+});
+// Now GET /forecast/solar works without query params
 ```
 
 ### Example 6: Handling 503 (upstream service down)
@@ -868,25 +989,25 @@ try {
 
 ## Endpoint Quick Reference
 
-| Method   | Path                                              | Purpose                                             |
-| -------- | ------------------------------------------------- | --------------------------------------------------- |
-| `GET`    | `/status`                                         | Onboarding completion state                         |
-| `GET`    | `/dashboard`                                      | Everything in one call (profile + load + forecasts) |
-| `POST`   | `/profile`                                        | Create profile from EPC LMK key                     |
-| `GET`    | `/profile`                                        | Get property profile                                |
-| `POST`   | `/profile/refresh`                                | Force re-fetch from EPC API                         |
-| `DELETE` | `/profile`                                        | Delete all energy profile data                      |
-| `PATCH`  | `/profile/hardware`                               | User corrects hardware guesses                      |
-| `GET`    | `/profile/history`                                | UPRN historical EPC certificates                    |
-| `GET`    | `/tariffs/providers`                              | List 18 UK energy providers                         |
-| `GET`    | `/tariffs?providerId=X&type=flat&page=1&limit=20` | Filtered + paginated tariffs                        |
-| `GET`    | `/tariffs/:providerId`                            | Tariffs for one provider                            |
-| `POST`   | `/tariffs/refresh`                                | Re-seed tariff data (admin)                         |
-| `POST`   | `/load-profile`                                   | Set provider + tariff + monthly bill                |
-| `GET`    | `/load-profile`                                   | Get current load profile                            |
-| `PATCH`  | `/load-profile`                                   | Update bill or tariff                               |
-| `GET`    | `/forecast/solar`                                 | Hourly generation by season                         |
-| `GET`    | `/forecast/cost-impact`                           | Solar + battery savings                             |
-| `GET`    | `/forecast/tariff-comparison`                     | SVT vs ToU comparison                               |
-| `GET`    | `/forecast/heat-pump`                             | Heat pump running cost                              |
-| `GET`    | `/forecast/summary`                               | All 4 forecasts + error reasons                     |
+| Method   | Path                                              | Purpose                                              |
+| -------- | ------------------------------------------------- | ---------------------------------------------------- |
+| `GET`    | `/status`                                         | Onboarding completion state                          |
+| `GET`    | `/dashboard`                                      | Everything in one call (profile + load + forecasts)  |
+| `POST`   | `/profile`                                        | Create profile from EPC LMK key                      |
+| `GET`    | `/profile`                                        | Get property profile                                 |
+| `POST`   | `/profile/refresh`                                | Force re-fetch from EPC API                          |
+| `DELETE` | `/profile`                                        | Delete all energy profile data                       |
+| `PATCH`  | `/profile/hardware`                               | User corrects hardware guesses                       |
+| `GET`    | `/profile/history`                                | UPRN historical EPC certificates                     |
+| `GET`    | `/tariffs/providers`                              | List 18 UK energy providers                          |
+| `GET`    | `/tariffs?providerId=X&type=flat&page=1&limit=20` | Filtered + paginated tariffs                         |
+| `GET`    | `/tariffs/:providerId`                            | Tariffs for one provider                             |
+| `POST`   | `/tariffs/refresh`                                | Re-seed tariff data (admin)                          |
+| `POST`   | `/load-profile`                                   | Set provider + tariff + monthly bill                 |
+| `GET`    | `/load-profile`                                   | Get current load profile                             |
+| `PATCH`  | `/load-profile`                                   | Update bill or tariff                                |
+| `GET`    | `/forecast/solar?panelCount=8&capacityKwp=3.5`    | Hourly generation (with optional "what if" override) |
+| `GET`    | `/forecast/cost-impact`                           | Solar + battery savings                              |
+| `GET`    | `/forecast/tariff-comparison`                     | SVT vs ToU comparison                                |
+| `GET`    | `/forecast/heat-pump`                             | Heat pump running cost                               |
+| `GET`    | `/forecast/summary`                               | All 4 forecasts + error reasons                      |

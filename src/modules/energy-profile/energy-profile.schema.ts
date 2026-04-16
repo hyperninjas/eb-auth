@@ -80,12 +80,12 @@ export const providerIdParamSchema = z.object({
 });
 export type ProviderIdParam = z.infer<typeof providerIdParamSchema>;
 
-// ── Forecast query (optional season filter) ─────────────────────────
+// ── Forecast query ──────────────────────────────────────────────────
 
-export const forecastQuerySchema = z.object({
-  season: z
-    .enum(["summer", "winter", "shoulder"])
-    .optional()
-    .describe("Optional season filter for solar forecast"),
+export const solarForecastQuerySchema = z.object({
+  /** Override system capacity for "what if" simulation (kWp). */
+  capacityKwp: z.coerce.number().positive().max(50).optional(),
+  /** Override panel count for "what if" simulation. */
+  panelCount: z.coerce.number().int().min(1).max(50).optional(),
 });
-export type ForecastQuery = z.infer<typeof forecastQuerySchema>;
+export type SolarForecastQuery = z.infer<typeof solarForecastQuerySchema>;

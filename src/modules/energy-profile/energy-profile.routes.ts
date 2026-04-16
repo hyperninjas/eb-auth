@@ -17,6 +17,7 @@ import {
   updateLoadProfileSchema,
   providerIdParamSchema,
   tariffQuerySchema,
+  solarForecastQuerySchema,
 } from "./energy-profile.schema";
 
 /** Async route handler compatible with asyncHandler(). */
@@ -115,7 +116,11 @@ export function createEnergyProfileRouter(controller: EnergyProfileController): 
 
   // ── Forecast Functions ──────────────────────────────────────────
 
-  router.get("/forecast/solar", asyncHandler(controller.getSolarForecast));
+  router.get(
+    "/forecast/solar",
+    validate({ query: solarForecastQuerySchema }),
+    asyncHandler(controller.getSolarForecast),
+  );
 
   router.get("/forecast/cost-impact", asyncHandler(controller.getCostImpact));
 

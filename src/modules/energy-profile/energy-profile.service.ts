@@ -349,9 +349,7 @@ export function createEnergyProfileService(deps: EnergyProfileServiceDeps) {
       return providers.map(toProviderDTO);
     },
 
-    async listTariffs(
-      query: TariffQuery,
-    ): Promise<{
+    async listTariffs(query: TariffQuery): Promise<{
       data: EnergyTariffDTO[];
       pagination: { page: number; limit: number; total: number; totalPages: number };
     }> {
@@ -540,21 +538,39 @@ export function createEnergyProfileService(deps: EnergyProfileServiceDeps) {
 
     // ── Forecast Functions ────────────────────────────────────────
 
-    async getSolarForecast(userId: string): Promise<SolarForecastResult> {
+    async getSolarForecast(
+      userId: string,
+      overrides?: { capacityKwp?: number | undefined; panelCount?: number | undefined },
+    ): Promise<SolarForecastResult> {
       const profile = await energyProfileRepository.findProfileWithRelations(userId);
       if (!profile) throw new PropertyProfileNotFoundError(userId);
 
-      const cached = await cache.getForecast(profile.id, "solar");
-      if (cached) return JSON.parse(cached) as SolarForecastResult;
-
       const hardware = profile.hardware as HardwareExtrapolation | null;
-      if (!hardware) throw new InsufficientDataError("Hardware extrapolation not available.");
 
-      const capacityKwp = hardware.solar.estimatedCapacityKwp;
-      if (capacityKwp <= 0)
-        throw new InsufficientDataError(
-          "No solar capacity estimated. Update your hardware details to add solar panels.",
-        );
+      // Determine capacity: user override > profile hardware > error
+      let capacityKwp: number;
+      if (overrides?.capacityKwp) {
+        // Direct capacity override — "what if I had a 5kWp system?"
+        capacityKwp = overrides.capacityKwp;
+      } else if (overrides?.panelCount) {
+        // Panel count override — use current era wattage (430W N-Type)
+        const wattage = hardware?.solar.estimatedPanelWattage ?? 430;
+        capacityKwp = (overrides.panelCount * wattage) / 1000;
+      } else {
+        // Use profile's extrapolated capacity
+        const cacheKey = `solar`;
+        const cached = await cache.getForecast(profile.id, cacheKey);
+        if (cached) return JSON.parse(cached) as SolarForecastResult;
+
+        capacityKwp = hardware?.solar.estimatedCapacityKwp ?? 0;
+        if (capacityKwp <= 0) {
+          throw new InsufficientDataError(
+            "No solar capacity estimated for this property. " +
+              "Try adding ?panelCount=8 or ?capacityKwp=3.5 to simulate a system, " +
+              "or update your hardware details via PATCH /profile/hardware.",
+          );
+        }
+      }
 
       const irradiance = await getOrFetchIrradiance(pvgisClient, profile.postcode);
 
@@ -564,7 +580,10 @@ export function createEnergyProfileService(deps: EnergyProfileServiceDeps) {
         latitude: irradiance.latitude,
       });
 
-      void cache.setForecast(profile.id, "solar", JSON.stringify(result));
+      // Only cache when using profile defaults (not overrides)
+      if (!overrides?.capacityKwp && !overrides?.panelCount) {
+        void cache.setForecast(profile.id, "solar", JSON.stringify(result));
+      }
       return result;
     },
 

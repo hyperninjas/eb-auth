@@ -14,6 +14,7 @@ import type {
   UpdateHardwareInput,
   ProviderIdParam,
   TariffQuery,
+  SolarForecastQuery,
 } from "./energy-profile.schema";
 import type {
   PropertyProfileDTO,
@@ -129,7 +130,12 @@ export function createEnergyProfileController(service: Service) {
     // ── Forecasts ─────────────────────────────────────────────────
 
     getSolarForecast: async (req: Request, res: Response<SolarForecastResult>): Promise<void> => {
-      const result = await service.getSolarForecast(req.user!.id);
+      const query = (req as ValidatedRequest<unknown, SolarForecastQuery>).validated.query;
+      const overrides =
+        query.capacityKwp || query.panelCount
+          ? { capacityKwp: query.capacityKwp, panelCount: query.panelCount }
+          : undefined;
+      const result = await service.getSolarForecast(req.user!.id, overrides);
       res.json(result);
     },
 
