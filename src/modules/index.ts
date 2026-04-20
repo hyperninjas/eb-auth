@@ -16,6 +16,7 @@ import { createEpcModule } from "./epc";
 import { createSolarModule } from "./solar";
 import { createWeatherModule } from "./weather";
 import { createEnergyProfileModule } from "./energy-profile";
+import { createGrantsModule } from "./grants";
 
 /**
  * Module registry — single source of truth for which feature modules are
@@ -118,5 +119,10 @@ const energyProfile = epc
   ? createEnergyProfileModule({ epcClient: epc.client, epcCache: epc.cache })
   : null;
 if (energyProfile) optionalModules.push(energyProfile);
+
+// grants module depends on energy-profile (uses PropertyProfile + hardware data).
+// If energy-profile is disabled, grants cannot function.
+const grants = energyProfile ? createGrantsModule() : null;
+if (grants) optionalModules.push(grants);
 
 modules.push(...optionalModules);
