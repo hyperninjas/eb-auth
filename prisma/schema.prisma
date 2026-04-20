@@ -82,6 +82,11 @@ model User {
   // PropertyProfile model in the same migration.
   propertyProfile PropertyProfile?
 
+  // Owned by the OPTIONAL grants module. If you remove
+  // src/modules/grants/, drop this relation and the
+  // UserGrantProfile model in the same migration.
+  grantProfile UserGrantProfile?
+
   @@index([houseId])
   @@index([isOnboardingDone])
   @@map("user")
@@ -401,6 +406,34 @@ model PvgisIrradiance {
 
   @@unique([latitude, longitude])
   @@map("pvgis_irradiance")
+}
+
+model UserGrantProfile {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String   @unique @map("user_id")
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // BUS (Boiler Upgrade Scheme) eligibility answers
+  isHomeowner       Boolean? @map("is_homeowner")
+
+  // WH:LG (Warm Homes Local) eligibility answers
+  householdIncome   String?  @map("household_income") @db.VarChar(20)
+  // enum: "low" | "medium" | "high" | null
+
+  // ECO4 eligibility answers
+  hasVulnerableOccupant Boolean? @map("has_vulnerable_occupant")
+
+  // SEG (Smart Export Guarantee) eligibility answers
+  solarMcsRegistered Boolean? @map("solar_mcs_registered")
+  mcsInstallerId     String?  @map("mcs_installer_id") @db.VarChar(100)
+
+  // Assessment tracking
+  lastAssessedAt    DateTime @default(now()) @map("last_assessed_at") @db.Timestamptz()
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz()
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz()
+
+  @@index([userId])
+  @@map("user_grant_profile")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
