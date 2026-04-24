@@ -12,6 +12,7 @@ import { healthRouter } from "./health";
 // the conditional push, delete the module folder under `src/modules/<m>`.
 // No core file (env.ts, error-handler.ts, app.ts) needs to be touched.
 import { createShopModule } from "./shop";
+import { createMedusaModule } from "./medusa";
 import { createEpcModule } from "./epc";
 import { createSolarModule } from "./solar";
 import { createWeatherModule } from "./weather";
@@ -103,6 +104,9 @@ const optionalModules: AppModule[] = [];
 
 const shop = createShopModule();
 if (shop) optionalModules.push(shop);
+
+const medusa = createMedusaModule();
+if (medusa) optionalModules.push(medusa);
 
 const epc = createEpcModule();
 if (epc) optionalModules.push(epc);

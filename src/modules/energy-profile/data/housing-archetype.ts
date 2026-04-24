@@ -1,7 +1,9 @@
 /**
- * Housing Archetype Matrix — maps UK property type + built form to a
- * safe, typical maximum panel count. These are conservative estimates
- * based on average UK roof sizes by dwelling type.
+ * Housing Archetype Matrix — maps UK property type + built form to the
+ * MAXIMUM realistic panel count for that combination.
+ *
+ * Based on UK solar installer guidelines (2024). Values represent the high end
+ * of typical installations for each property type and built form.
  *
  * The EPC API returns `propertyType` (House, Bungalow, Flat, Maisonette,
  * Park home) and `builtForm` (Detached, Semi-Detached, Mid-Terrace,
@@ -16,26 +18,33 @@ export interface HousingArchetype {
 }
 
 /**
- * Lookup table keyed by normalised `builtForm` values from EPC data.
- * Falls back to a property-type-level default if the built form is
- * unrecognised.
+ * Combined lookup: propertyType + builtForm → max panel count.
+ * Keys are "propertytype-builtform" (both lowercased).
+ * This exhaustively covers all combinations from the image.
  */
-const BUILT_FORM_PANELS: Record<string, number> = {
-  "mid-terrace": 6,
-  "enclosed mid-terrace": 6,
-  "semi-detached": 10,
-  "end-terrace": 10,
-  "enclosed end-terrace": 10,
-  detached: 14,
+const COMBINED_PROPERTY_PANELS: Record<string, number> = {
+  // HOUSES
+  "house-detached": 16, // Detached House: 12–16 panels
+  "house-semi-detached": 12, // Semi-Detached House: 8–12 panels
+  "house-mid-terrace": 8, // Mid-Terrace House: 6–8 panels
+  "house-end-terrace": 10, // End-Terrace House: 6–10 panels
+  "house-enclosed mid-terrace": 6, // Enclosed Mid-Terrace House: 4–6 panels
+  "house-enclosed end-terrace": 8, // Enclosed End-Terrace House: 4–8 panels
+
+  // BUNGALOWS
+  "bungalow-detached": 14, // Detached Bungalow: 10–14 panels
+  "bungalow-semi-detached": 12, // Semi-Detached Bungalow: 8–12 panels
+  "bungalow-mid-terrace": 8, // Mid-Terrace Bungalow: 6–8 panels
+  "bungalow-end-terrace": 10, // End-Terrace Bungalow: 6–10 panels
 };
 
 /**
- * Fallback by property type when the built form is absent or
- * unrecognised. Bungalows have good roof access but less area.
+ * Fallback by property type only when the built form is absent or
+ * unrecognised. Used as second-level lookup.
  */
 const PROPERTY_TYPE_PANELS: Record<string, number> = {
   house: 10,
-  bungalow: 8,
+  bungalow: 12,
   "park home": 4,
 };
 
@@ -43,10 +52,11 @@ const PROPERTY_TYPE_PANELS: Record<string, number> = {
 const MANUAL_SURVEY_TYPES = new Set(["flat", "maisonette"]);
 
 /**
- * Determine panel count for a given property.
+ * Determine maximum panel count for a given property.
  *
- * @param propertyType - EPC `propertyType` field (e.g. "House")
+ * @param propertyType - EPC `propertyType` field (e.g. "House", "Bungalow")
  * @param builtForm    - EPC `builtForm` field (e.g. "Semi-Detached")
+ * @returns Maximum realistic panel count; 0 if manual survey required
  */
 export function getArchetype(propertyType: string, builtForm: string): HousingArchetype {
   const normType = propertyType.toLowerCase().trim();
@@ -56,11 +66,14 @@ export function getArchetype(propertyType: string, builtForm: string): HousingAr
     return { panelCount: 0, manualSurveyRequired: true };
   }
 
-  const fromForm = BUILT_FORM_PANELS[normForm];
-  if (fromForm !== undefined) {
-    return { panelCount: fromForm, manualSurveyRequired: false };
+  // Try combined lookup first (property type + built form)
+  const combinedKey = `${normType}-${normForm}`;
+  const fromCombined = COMBINED_PROPERTY_PANELS[combinedKey];
+  if (fromCombined !== undefined) {
+    return { panelCount: fromCombined, manualSurveyRequired: false };
   }
 
+  // Fall back to property type only
   const fromType = PROPERTY_TYPE_PANELS[normType];
   if (fromType !== undefined) {
     return { panelCount: fromType, manualSurveyRequired: false };

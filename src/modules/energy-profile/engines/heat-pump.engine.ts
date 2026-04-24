@@ -1,22 +1,24 @@
 /**
- * Function 4: Heat Pump Running Cost Simulation.
+ * Function 4: Heat Pump Running Cost Simulation & Boiler Comparison.
  *
- * Converts fossil fuel (gas) space heating demand into electrical demand
- * via a heat pump COP, distributes the new electrical load across
- * heating hours, and re-runs the tariff checker to show the combined
- * impact of solar + battery + heat pump.
+ * Converts fossil fuel (gas) space heating demand into:
+ *   1. Current gas boiler scenario (baseline with age-dependent efficiency)
+ *   2. Heat pump alternative scenario (with COP, solar synergy, ToU optimization)
  *
- * Pure function — no I/O.
+ * Compares annual heating costs and calculates payback/ROI.
+ *
+ * Pure function — no I/O, fully deterministic.
  */
 
 import { compareTariffs, type TariffCheckerResult, type TouRates } from "./tariff-checker.engine";
+import { getBoilerEfficiency, getHeatPumpCOP, estimateBoilerAge } from "../data/boiler-efficiency";
 
 // ── Types ───────────────────────────────────────────────────────────
 
 export interface HeatPumpInput {
   /** Annual space heating demand in kWh (from EPC or derived). */
   annualSpaceHeatingDemandKwh: number;
-  /** Heat pump Coefficient of Performance (default 3.0). */
+  /** Heat pump Coefficient of Performance (optional; derived from boiler age if not provided). */
   cop?: number;
   /** Existing 24h load profile (hourly kWh). */
   loadCurve: number[];
@@ -32,9 +34,33 @@ export interface HeatPumpInput {
   segExportRatePence: number;
   /** ToU rates. */
   touRates: TouRates;
+  // Boiler comparison (new)
+  /** Gas tariff in pence/kWh (for baseline scenario). */
+  gasTariffPence?: number;
+  /** Gas standing charge in pence/day (for baseline scenario). */
+  gasStandingChargePence?: number;
+  /** Main heat description from EPC (to extract boiler age). */
+  mainheatDescription?: string;
+  /** EPC inspection date (ISO string; used to estimate boiler age if not in description). */
+  epcInspectionDate?: string;
 }
 
-export interface HeatPumpResult {
+export interface BoilerScenario {
+  /** Gas boiler efficiency (age-dependent). */
+  boilerEfficiency: number;
+  /** Boiler age in years. */
+  boilerAgeYears: number;
+  /** Annual gas demand in kWh (spaceHeating / efficiency). */
+  annualGasDemandKwh: number;
+  /** Daily gas demand in kWh. */
+  dailyGasKwh: number;
+  /** Annual gas cost (pence). */
+  annualGasCostPence: number;
+  /** Annual gas cost (pounds). */
+  annualGasCostPounds: number;
+}
+
+export interface HeatPumpScenario {
   /** Annual electrical demand for heating (spaceHeating / COP). */
   annualElectricalDemandKwh: number;
   /** Daily electrical demand for heating. */
@@ -51,6 +77,20 @@ export interface HeatPumpResult {
   solarAbsorptionPercent: number;
   /** Annual running cost with best tariff (pounds). */
   annualRunningCostPounds: number;
+}
+
+export interface HeatPumpResult {
+  // Current boiler baseline
+  boilerScenario: BoilerScenario;
+  // Heat pump alternative
+  heatPumpScenario: HeatPumpScenario;
+  // Comparison metrics
+  /** Annual cost difference: HP vs Boiler (negative = HP cheaper). */
+  annualCostDeltaPounds: number;
+  /** Payback period in years (if installing HP today; -1 if HP is immediately cheaper). */
+  paybackYears: number | null;
+  /** Annual savings with HP vs current boiler (pounds). */
+  annualSavingsPounds: number;
 }
 
 // ── Heat pump load distribution ─────────────────────────────────────
@@ -94,7 +134,31 @@ const HEAT_PUMP_HOURLY_WEIGHTS: readonly number[] = [
 // ── Engine ───────────────────────────────────────────────────────────
 
 export function simulateHeatPump(input: HeatPumpInput): HeatPumpResult {
-  const cop = input.cop ?? 3.0;
+  // ── Boiler Baseline Scenario ──────────────────────────────────────
+  const boilerAgeYears = estimateBoilerAge(input.mainheatDescription, input.epcInspectionDate);
+  const boilerEff = getBoilerEfficiency(boilerAgeYears);
+  const annualGasDemandKwh = input.annualSpaceHeatingDemandKwh / boilerEff.efficiency;
+  const dailyGasKwh = annualGasDemandKwh / 365;
+
+  // Calculate annual gas cost (baseline scenario)
+  // Cost = (daily demand × rate) + (daily standing charge) × 365 days
+  const gasTariffPence = input.gasTariffPence ?? 7.5; // UK average gas ~7.5p/kWh
+  const gasStandingChargePence = input.gasStandingChargePence ?? 50; // UK average ~50p/day
+  const annualGasCostPence = dailyGasKwh * gasTariffPence * 365 + gasStandingChargePence * 365;
+  const annualGasCostPounds = annualGasCostPence / 100;
+
+  const boilerScenario: BoilerScenario = {
+    boilerEfficiency: boilerEff.efficiency,
+    boilerAgeYears,
+    annualGasDemandKwh: Math.round(annualGasDemandKwh),
+    dailyGasKwh: round2(dailyGasKwh),
+    annualGasCostPence: Math.round(annualGasCostPence),
+    annualGasCostPounds: round2(annualGasCostPounds),
+  };
+
+  // ── Heat Pump Scenario ────────────────────────────────────────────
+  // Use provided COP, or derive from boiler age (assume similar age for current HP if replacing)
+  const cop = input.cop ?? getHeatPumpCOP(boilerAgeYears);
   const annualElectricalDemandKwh = input.annualSpaceHeatingDemandKwh / cop;
   const dailyHeatPumpKwh = annualElectricalDemandKwh / 365;
 
@@ -130,9 +194,9 @@ export function simulateHeatPump(input: HeatPumpInput): HeatPumpResult {
   // Annual running cost with the better tariff
   const bestTariff =
     tariffComparison.recommendation === "tou" ? tariffComparison.tou : tariffComparison.svt;
-  const annualRunningCostPounds = bestTariff.annualCostPounds;
+  const hpAnnualRunningCostPounds = bestTariff.annualCostPounds;
 
-  return {
+  const heatPumpScenario: HeatPumpScenario = {
     annualElectricalDemandKwh: Math.round(annualElectricalDemandKwh),
     dailyHeatPumpKwh: round2(dailyHeatPumpKwh),
     cop,
@@ -140,7 +204,27 @@ export function simulateHeatPump(input: HeatPumpInput): HeatPumpResult {
     combinedLoadCurve,
     tariffComparison,
     solarAbsorptionPercent,
-    annualRunningCostPounds,
+    annualRunningCostPounds: hpAnnualRunningCostPounds,
+  };
+
+  // ── Comparison & Payback ──────────────────────────────────────────
+  const annualCostDeltaPounds = hpAnnualRunningCostPounds - annualGasCostPounds;
+  const annualSavingsPounds = Math.max(0, -annualCostDeltaPounds);
+
+  // Payback period: assumes typical HP install cost £8000–15000
+  // Use £10000 as mid-range estimate. Payback = install cost / annual savings
+  const hpInstallCostEstimate = 10000; // £ (typical 8–15 range)
+  const paybackYears =
+    annualSavingsPounds > 0
+      ? Math.round((hpInstallCostEstimate / annualSavingsPounds) * 10) / 10
+      : null;
+
+  return {
+    boilerScenario,
+    heatPumpScenario,
+    annualCostDeltaPounds: round2(annualCostDeltaPounds),
+    paybackYears,
+    annualSavingsPounds: round2(annualSavingsPounds),
   };
 }
 

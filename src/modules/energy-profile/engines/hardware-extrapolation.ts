@@ -11,8 +11,10 @@
  * solar or a heat pump appeared.
  */
 
-import { getPanelWattage, type PanelEra } from "../data/panel-wattage-stepper";
 import { getArchetype } from "../data/housing-archetype";
+import { solarSystemSize } from "../data/solar-system-sizing";
+import { heatPumpSize } from "../data/heat-pump-sizing";
+import { predictSolarSystem } from "../data/solar-system-prediction";
 
 // ── Input types ─────────────────────────────────────────────────────
 
@@ -49,6 +51,17 @@ export interface SolarExtrapolation {
   estimatedCapacityKwp: number;
   confidence: "high" | "medium" | "low";
   manualSurveyRequired: boolean;
+  // Derived system sizing
+  estimatedInverterKw: number;
+  estimatedBatteryKwh: number;
+  // Prediction fields (if solar detected, we predict actual installed capacity)
+  predictedFrom: "theoretical_max" | "historical_prediction" | null;
+  /** Age-adjusted capacity accounting for panel degradation */
+  effectiveCapacityKwp: number;
+  /** Panel degradation percentage (0.6% per year) */
+  degradationPercent: number;
+  /** Explanation of how capacity was determined */
+  predictionReason: string | null;
 }
 
 export interface BatteryExtrapolation {
@@ -62,7 +75,10 @@ export interface HeatPumpExtrapolation {
   birthDate: string | null;
   type: "air-source" | "ground-source" | "unknown" | null;
   readiness: "highly_suitable" | "suitable" | "insulation_required" | "unknown";
-  readinessScore: number | null;
+  readinessScore: number | null; // kWh/m²/year energy consumption
+  // Sizing recommendations (derived from floor area + building efficiency)
+  estimatedCapacityKw: number | null;
+  sizingReason: string | null;
 }
 
 export interface HardwareExtrapolation {
@@ -89,42 +105,58 @@ function extrapolateSolar(input: HardwareExtrapolationInput): SolarExtrapolation
   // Detect solar from current certificate or history
   const hasSolar = parsePhotoSupply(input.photoSupply) > 0;
   const solarBirthDate = findSolarBirthDate(input.history);
-
-  // If current cert shows solar, use the birth date (or inspection date
-  // of the latest cert that first shows it) for the technology stepper.
   const detected = hasSolar || solarBirthDate !== null;
 
+  // ── No Solar Detected: Use Theoretical Maximum ──────────────────────
   if (!detected || archetype.panelCount === 0) {
-    // No solar detected, or flat/maisonette — return "potential" simulation
-    const currentYear = new Date().getFullYear();
-    const era = getPanelWattage(currentYear);
+    // Use theoretical max for property type (for "what if" recommendations)
+    const panelCount = archetype.panelCount;
+    const theoreticalSize = solarSystemSize(panelCount);
+
+    const panelWattage = 435; // Current standard
+    const panelTechnology = "N-Type Si (435W)"; // Current standard
 
     return {
       detected: false,
       birthDate: null,
-      estimatedPanelCount: archetype.panelCount,
-      estimatedPanelWattage: era.wattage,
-      panelTechnology: era.technology,
-      estimatedCapacityKwp: (archetype.panelCount * era.wattage) / 1000,
+      estimatedPanelCount: panelCount,
+      estimatedPanelWattage: panelWattage,
+      panelTechnology,
+      estimatedCapacityKwp: theoreticalSize.capacityKwp,
       confidence: archetype.manualSurveyRequired ? "low" : "medium",
       manualSurveyRequired: archetype.manualSurveyRequired,
+      estimatedInverterKw: theoreticalSize.inverterKw,
+      estimatedBatteryKwh: theoreticalSize.batteryKwh,
+      predictedFrom: "theoretical_max",
+      effectiveCapacityKwp: theoreticalSize.capacityKwp,
+      degradationPercent: 0,
+      predictionReason: "No solar detected. Using theoretical maximum for property type.",
     };
   }
 
-  // Solar detected — use birth date for technology stepper
+  // ── Solar Detected: Predict Actual Installed Capacity ──────────────
+  // Extract birth year from birth date string (ISO format: YYYY-MM-DD)
   const birthDateStr = solarBirthDate ?? new Date().toISOString().slice(0, 10);
-  const birthYear = new Date(birthDateStr).getFullYear();
-  const era: PanelEra = getPanelWattage(birthYear);
+  const birthYear = parseInt(birthDateStr.slice(0, 4), 10);
+
+  // Use the prediction engine to estimate what was actually installed
+  const prediction = predictSolarSystem(birthYear, solarBirthDate ? "high" : "medium");
 
   return {
     detected: true,
     birthDate: birthDateStr,
-    estimatedPanelCount: archetype.panelCount,
-    estimatedPanelWattage: era.wattage,
-    panelTechnology: era.technology,
-    estimatedCapacityKwp: (archetype.panelCount * era.wattage) / 1000,
-    confidence: solarBirthDate ? "high" : "medium",
+    estimatedPanelCount: prediction.estimatedPanelCount,
+    estimatedPanelWattage: prediction.panelWattage,
+    panelTechnology: prediction.panelTechnology,
+    estimatedCapacityKwp: prediction.estimatedCapacityKwp,
+    confidence: prediction.confidence === "high" ? "high" : "medium",
     manualSurveyRequired: archetype.manualSurveyRequired,
+    estimatedInverterKw: prediction.inverterKw, // Use prediction's inverter
+    estimatedBatteryKwh: prediction.batteryKwh, // Use prediction's battery
+    predictedFrom: "historical_prediction",
+    effectiveCapacityKwp: prediction.effectiveCapacityKwp,
+    degradationPercent: prediction.degradationPercent,
+    predictionReason: prediction.reason,
   };
 }
 
@@ -151,11 +183,14 @@ function parsePhotoSupply(value: string | null | undefined): number {
 // ── Battery ─────────────────────────────────────────────────────────
 
 function extrapolateBattery(solar: SolarExtrapolation): BatteryExtrapolation {
+  // Use the inverter-derived battery size from the solar system sizing
+  const batteryCapacity = solar.estimatedBatteryKwh;
+
   if (!solar.detected) {
     return {
       probability: 0.01,
       estimatedCapacityKwh: 0,
-      recommendation: "Bundle a 5kWh battery with solar installation for optimal savings.",
+      recommendation: `Bundle a ${batteryCapacity}kWh battery with solar installation for optimal savings.`,
     };
   }
 
@@ -164,7 +199,7 @@ function extrapolateBattery(solar: SolarExtrapolation): BatteryExtrapolation {
   if (birthYear && birthYear >= 2024) {
     return {
       probability: 0.8,
-      estimatedCapacityKwh: 5,
+      estimatedCapacityKwh: batteryCapacity,
       recommendation: null,
     };
   }
@@ -172,7 +207,7 @@ function extrapolateBattery(solar: SolarExtrapolation): BatteryExtrapolation {
   return {
     probability: 0.1,
     estimatedCapacityKwh: 0,
-    recommendation: "Retrofit a 5kWh smart battery to maximise self-consumption.",
+    recommendation: `Retrofit a ${batteryCapacity}kWh smart battery to maximise self-consumption.`,
   };
 }
 
@@ -197,13 +232,13 @@ function extrapolateHeatPump(input: HardwareExtrapolationInput): HeatPumpExtrapo
     }
   }
 
-  // Calculate readiness score from energy intensity (kWh/m2/year).
+  // Calculate readiness score from energy intensity (kWh/m²/year).
   //
-  // The EPC field `energyConsumptionCurrent` is ALREADY in kWh/m2/year
+  // The EPC field `energyConsumptionCurrent` is ALREADY in kWh/m²/year
   // — do NOT divide by floor area again. The thresholds are:
-  //   < 120 kWh/m2/year → well-insulated, heat pump will perform well
+  //   < 120 kWh/m²/year → well-insulated, heat pump will perform well
   //   120–150 → acceptable, minor insulation upgrades may help
-  //   > 150 → poor fabric, insulate before installing a heat pump
+  //   > 150 → poor fabric, needs oversized heat pump + insulation
   let readiness: HeatPumpExtrapolation["readiness"] = "unknown";
   let readinessScore: number | null = null;
 
@@ -219,7 +254,18 @@ function extrapolateHeatPump(input: HardwareExtrapolationInput): HeatPumpExtrapo
     }
   }
 
-  return { detected, birthDate, type, readiness, readinessScore };
+  // Calculate recommended heat pump capacity based on floor area and efficiency
+  const sizing = heatPumpSize(input.totalFloorArea, input.energyConsumptionCurrent);
+
+  return {
+    detected,
+    birthDate,
+    type,
+    readiness,
+    readinessScore,
+    estimatedCapacityKw: sizing.recommendedCapacityKw,
+    sizingReason: sizing.reason,
+  };
 }
 
 function findHeatPumpBirthDate(history: HistoricalCert[]): string | null {
